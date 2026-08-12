@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Cat CC2</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0f1419; --card: #1a212b; --line: #2a3442;
+    --text: #e6edf3; --muted: #8b98a5;
+    --green: #00b894; --red: #e17055; --gray: #6c7a89;
+  }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 14px; display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--gray); transition: background .3s; }
+  .dot.running { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .dot.error { background: var(--red); box-shadow: 0 0 8px var(--red); }
+  header h1 { font-size: 16px; font-weight: 600; letter-spacing: .5px; }
+  header span.sub { color: var(--muted); font-size: 12px; }
+
+  main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+  textarea {
+    width: 100%; background: var(--bg); border: 1px solid var(--line);
+    color: var(--text); border-radius: 8px; padding: 10px 12px; font-size: 13px;
+    font-family: inherit; outline: none; resize: none; min-height: 54px;
+  }
+  textarea:focus { border-color: var(--green); }
+  .row { display: flex; gap: 10px; margin-top: 12px; }
+  .btn {
+    flex: 1; border: none; border-radius: 8px; padding: 11px 0;
+    font-size: 14px; font-weight: 600; cursor: pointer; color: #fff;
+    transition: filter .15s, opacity .15s;
+  }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn:hover:not(:disabled) { filter: brightness(1.1); }
+  .btn.connect { background: var(--green); }
+  .btn.stop { background: var(--red); }
+  .btn.ghost { background: var(--line); color: var(--text); font-weight: 500; }
+
+  .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .stat { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .stat .k { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+  .stat .v { font-size: 15px; font-weight: 600; word-break: break-all; }
+  .stat .v.green { color: var(--green); }
+  .stat .v.red { color: var(--red); }
+  .stat.full { grid-column: 1 / -1; }
+
+  .err { color: var(--red); font-size: 12px; margin-top: 10px; word-break: break-all; display: none; }
+  .hint { color: var(--muted); font-size: 11px; margin-top: 8px; line-height: 1.5; }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="dot" id="dot"></div>
+    <h1>Cat CC2</h1>
+    <span class="sub" id="titleState">未连接</span>
+  </header>
+  <main>
+    <div class="card">
+      <label for="sub">订阅链接（URL 或直接粘贴节点）</label>
+      <textarea id="sub" placeholder="https://example.com/sub 或 vmess:// ss:// trojan:// ..."></textarea>
+      <div class="row">
+        <button class="btn connect" id="connectBtn">一键连接</button>
+        <button class="btn stop" id="stopBtn" disabled>断开</button>
+      </div>
+      <div class="row">
+        <button class="btn ghost" id="parseBtn">解析预览</button>
+      </div>
+      <div class="hint" id="hint">连接后自动选择最快节点（url-test），内核异常自动重启最多 3 次。</div>
+      <div class="err" id="err"></div>
+    </div>
+    <div class="card">
+      <label>运行状态</label>
+      <div class="status-grid">
+        <div class="stat"><div class="k">状态</div><div class="v" id="stRunning">已停止</div></div>
+        <div class="stat"><div class="k">当前节点</div><div class="v" id="stNode">—</div></div>
+        <div class="stat"><div class="k">延迟</div><div class="v" id="stLatency">—</div></div>
+        <div class="stat"><div class="k">重启次数</div><div class="v" id="stRetries">0</div></div>
+        <div class="stat full"><div class="k">最近错误</div><div class="v" id="stError" style="color:var(--muted)">无</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <label>当前路由规则（<span id="ruleHint">默认直连；仅 gfw 代理清单走代理</span>）</label>
+      <label style="margin-top:4px;">完整生效规则（只读，含 gfw 代理清单 <span id="gfwCount">—</span> 条）</label>
+      <textarea id="effectiveRules" readonly style="min-height:140px; font-family:Consolas,monospace; font-size:11px; color:var(--muted);"></textarea>
+      <label style="margin-top:10px;">自定义规则（可编辑，追加在 gfw 规则之前）</label>
+      <textarea id="rules" style="min-height:120px; font-family:Consolas,monospace; font-size:12px;"></textarea>
+      <div class="row">
+        <button class="btn ghost" id="rulesSave" disabled>保存并生效</button>
+      </div>
+      <div class="hint">规则格式：<code>类型,参数,DIRECT/auto</code>，例如 <code>DOMAIN-SUFFIX,baidu.com,DIRECT</code>。保存后自动重启内核立即生效（未连接时保存，下次连接生效）。</div>
+    </div>
+  </main>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+
+  function setState(s) {
+    const running = !!s.running;
+    $('dot').className = 'dot' + (running ? ' running' : (s.last_error ? ' error' : ''));
+    $('titleState').textContent = running ? '运行中' : (s.last_error ? '异常' : '未连接');
+    $('stRunning').textContent = running ? '运行中' : '已停止';
+    $('stRunning').className = 'v ' + (running ? 'green' : '');
+    $('stNode').textContent = s.node || '—';
+    $('stLatency').textContent = s.latency ? s.latency + ' ms' : '—';
+    $('stRetries').textContent = s.retries || 0;
+    $('stError').textContent = s.last_error || '无';
+    $('stError').style.color = s.last_error ? 'var(--red)' : 'var(--muted)';
+    $('connectBtn').disabled = running;
+    $('stopBtn').disabled = !running;
+  }
+
+  function showErr(msg) {
+    $('err').textContent = msg;
+    $('err').style.display = msg ? 'block' : 'none';
+  }
+
+  async function poll() {
+    try {
+      const s = await invoke('status');
+      setState(s);
+    } catch (e) { console.error('status err', e); }
+  }
+
+  $('connectBtn').onclick = async () => {
+    const sub = $('sub').value.trim();
+    if (!sub) { showErr('请先粘贴订阅链接'); return; }
+    showErr('');
+    $('connectBtn').disabled = true;
+    $('connectBtn').textContent = '连接中…';
+    try {
+      const r = await invoke('connect', { subscription: sub });
+      $('hint').textContent = `已连接，共 ${r.nodes} 个节点，监听端口 ${r.mixedPort}。`;
+      $('connectBtn').textContent = '一键连接';
+      poll();
+    } catch (e) {
+      showErr(String(e));
+      $('connectBtn').textContent = '一键连接';
+      $('connectBtn').disabled = false;
+    }
+  };
+
+  $('stopBtn').onclick = async () => {
+    try { await invoke('disconnect'); } catch (e) { console.error(e); }
+    poll();
+  };
+
+  $('parseBtn').onclick = async () => {
+    const sub = $('sub').value.trim();
+    if (!sub) { showErr('请先粘贴订阅链接'); return; }
+    $('parseBtn').textContent = '解析中…';
+    try {
+      const r = await invoke('parse_sub', { subscription: sub });
+      const names = (r.names || []).join('、');
+      $('hint').textContent = `解析到 ${r.count} 个节点：${names}${r.count > 50 ? ' …' : ''}`;
+      showErr('');
+    } catch (e) {
+      showErr(String(e));
+    }
+    $('parseBtn').textContent = '解析预览';
+  };
+
+  // 预填上次订阅
+  try { const saved = localStorage.getItem('catcc2_sub'); if (saved) $('sub').value = saved; } catch {}
+  $('sub').addEventListener('change', () => { try { localStorage.setItem('catcc2_sub', $('sub').value); } catch {} });
+
+  // 加载当前路由规则（完整生效规则只读展示 + 自定义规则可编辑）
+  async function loadRules() {
+    try {
+      // 完整生效规则（含 gfw 代理清单，只读）
+      const eff = await invoke('get_effective_rules');
+      $('effectiveRules').value = eff.rules || '';
+      $('gfwCount').textContent = eff.gfw_count || 0;
+      // 自定义规则（可编辑）
+      const text = await invoke('get_rules');
+      $('rules').value = text;
+      $('rulesSave').disabled = true;
+    } catch (e) { console.error('load rules err', e); }
+  }
+  $('rules').addEventListener('input', () => {
+    $('rulesSave').disabled = false;
+  });
+  // 保存并生效：保存后总是自动重启内核，立即生效
+  $('rulesSave').onclick = async () => {
+    $('rulesSave').disabled = true;
+    $('rulesSave').textContent = '保存中…';
+    try {
+      const r = await invoke('save_rules', { content: $('rules').value, restart: true });
+      $('hint').textContent = r.restarted ? '规则已保存，内核已重启，立即生效。' : '规则已保存（未连接，下次连接生效）。';
+      showErr('');
+      loadRules();
+    } catch (e) {
+      showErr('保存失败: ' + e);
+      $('rulesSave').disabled = false;
+    }
+    $('rulesSave').textContent = '保存并生效';
+  };
+  loadRules();
+
+  poll();
+  setInterval(poll, 3000);
+</script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+[package]
+name = "cat-cc2"
+version = "2.0.0"
+description = "极简 Windows 代理：订阅一键连接（mihomo 内核）"
+authors = ["suantea"]
+edition = "2021"
+
+[lib]
+name = "cat_cc2_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+url = "2"
+ureq = "2"

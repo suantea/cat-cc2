@@ -1,0 +1,12 @@
+# 构建产物
+/src-tauri/target/
+
+# tauri 生成代码
+/src-tauri/gen/
+
+# 运行时临时目录（mihomo 配置/日志/缓存）
+/config/temp/
+/src-tauri/config/
+
+# 内核二进制（外部下载，见 README）
+/mihomo-core.exe
