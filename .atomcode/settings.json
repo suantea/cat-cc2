@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd src-tauri && cargo fmt --check"
+          }
+        ]
+      }
+    ]
+  }
+}

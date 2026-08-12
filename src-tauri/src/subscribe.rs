@@ -1,5 +1,8 @@
 // 订阅解析：URL 拉取 / base64 节点列表 / share link / Clash YAML
-use base64::{Engine as _, engine::general_purpose::{STANDARD as B64, URL_SAFE, URL_SAFE_NO_PAD, STANDARD_NO_PAD}};
+use base64::{
+    engine::general_purpose::{STANDARD as B64, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use serde::Serialize;
 use serde_json::json;
 use std::time::Duration;
@@ -50,29 +53,43 @@ pub struct Node {
 fn decode_b64(s: &str) -> Option<String> {
     let s = s.trim();
     // 1) 标准 base64（vmess JSON、普通订阅）
-    if let Ok(v) = B64.decode(s) { return String::from_utf8(v).ok(); }
+    if let Ok(v) = B64.decode(s) {
+        return String::from_utf8(v).ok();
+    }
     // 2) URL-safe（ss:// 的 method:password 常用 - _）
-    if let Ok(v) = URL_SAFE.decode(s) { return String::from_utf8(v).ok(); }
+    if let Ok(v) = URL_SAFE.decode(s) {
+        return String::from_utf8(v).ok();
+    }
     // 3) URL-safe 无 padding
-    if let Ok(v) = URL_SAFE_NO_PAD.decode(s) { return String::from_utf8(v).ok(); }
+    if let Ok(v) = URL_SAFE_NO_PAD.decode(s) {
+        return String::from_utf8(v).ok();
+    }
     // 4) 标准无 padding
-    if let Ok(v) = STANDARD_NO_PAD.decode(s) { return String::from_utf8(v).ok(); }
+    if let Ok(v) = STANDARD_NO_PAD.decode(s) {
+        return String::from_utf8(v).ok();
+    }
     None
 }
 
 fn try_b64_decode(text: &str) -> Option<String> {
     let t = text.trim();
-    if t.len() < 10 || !t.chars().all(|c| c.is_ascii_alphanumeric() || "+/=-_".contains(c) || c.is_whitespace()) {
+    if t.len() < 10
+        || !t
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "+/=-_".contains(c) || c.is_whitespace())
+    {
         return None;
     }
     if let Some(dec) = decode_b64(&t.replace(char::is_whitespace, "")) {
-        if dec.contains("://") { return Some(dec); }
+        if dec.contains("://") {
+            return Some(dec);
+        }
     }
     None
 }
 
 fn name_from_hash(u: &Url) -> String {
-    u.fragment().map(|f| percent_decode_str(f)).unwrap_or_default()
+    u.fragment().map(percent_decode_str).unwrap_or_default()
 }
 
 fn percent_decode_str(s: &str) -> String {
@@ -83,38 +100,84 @@ fn percent_decode_str(s: &str) -> String {
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
             if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v); i += 3; continue;
+                out.push(v);
+                i += 3;
+                continue;
             }
         }
-        out.push(bytes[i]); i += 1;
+        out.push(bytes[i]);
+        i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
 }
 
 fn parse_share_link(link: &str) -> Option<Node> {
-    if link.starts_with("vmess://") {
-        let dec = decode_b64(&link[8..])?;
+    if let Some(rest) = link.strip_prefix("vmess://") {
+        let dec = decode_b64(rest)?;
         let o: serde_json::Value = serde_json::from_str(&dec).ok()?;
-        let add = o.get("add").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let port = o.get("port").and_then(|v| v.as_str().or_else(|| v.as_u64().map(|n| Box::leak(n.to_string().into_boxed_str()) as &str)).and_then(|s| s.parse().ok())).unwrap_or(0);
+        let add = o
+            .get("add")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let port = o
+            .get("port")
+            .and_then(|v| {
+                v.as_str()
+                    .or_else(|| {
+                        v.as_u64()
+                            .map(|n| Box::leak(n.to_string().into_boxed_str()) as &str)
+                    })
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap_or(0);
         return Some(Node {
             r#type: "vmess".into(),
-            name: o.get("ps").and_then(|v| v.as_str()).unwrap_or(&add).to_string(),
+            name: o
+                .get("ps")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&add)
+                .to_string(),
             server: add.clone(),
             port,
             uuid: o.get("id").and_then(|v| v.as_str()).map(String::from),
-            aid: o.get("aid").and_then(|v| v.as_str().or_else(|| v.as_u64().map(|n| Box::leak(n.to_string().into_boxed_str()) as &str)).and_then(|s| s.parse().ok())),
-            security: Some(o.get("scy").and_then(|v| v.as_str()).unwrap_or("auto").to_string()),
-            network: Some(o.get("net").and_then(|v| v.as_str()).unwrap_or("tcp").to_string()),
+            aid: o.get("aid").and_then(|v| {
+                v.as_str()
+                    .or_else(|| {
+                        v.as_u64()
+                            .map(|n| Box::leak(n.to_string().into_boxed_str()) as &str)
+                    })
+                    .and_then(|s| s.parse().ok())
+            }),
+            security: Some(
+                o.get("scy")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("auto")
+                    .to_string(),
+            ),
+            network: Some(
+                o.get("net")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("tcp")
+                    .to_string(),
+            ),
             host: o.get("host").and_then(|v| v.as_str()).map(String::from),
             path: o.get("path").and_then(|v| v.as_str()).map(String::from),
             sni: o.get("host").and_then(|v| v.as_str()).map(String::from),
-            tls: Some(if o.get("tls").and_then(|v| v.as_str()) == Some("tls") || o.get("security").and_then(|v| v.as_str()) == Some("tls") { "tls" } else { "" }.to_string()),
+            tls: Some(
+                if o.get("tls").and_then(|v| v.as_str()) == Some("tls")
+                    || o.get("security").and_then(|v| v.as_str()) == Some("tls")
+                {
+                    "tls"
+                } else {
+                    ""
+                }
+                .to_string(),
+            ),
             ..Default::default()
         });
     }
-    if link.starts_with("ss://") {
-        let rest = &link[5..];
+    if let Some(rest) = link.strip_prefix("ss://") {
         let (body_raw, name) = match rest.find('#') {
             Some(i) => (&rest[..i], percent_decode_str(&rest[i + 1..])),
             None => (rest, String::new()),
@@ -132,10 +195,14 @@ fn parse_share_link(link: &str) -> Option<Node> {
                 let (method, password) = dec.split_once(':').unwrap_or(("", ""));
                 let (server, port_str) = body[at + 1..].split_once(':').unwrap_or(("", ""));
                 return Some(Node {
-                    r#type: "ss".into(), name, server: server.to_string(),
+                    r#type: "ss".into(),
+                    name,
+                    server: server.to_string(),
                     port: port_str.parse().unwrap_or(0),
-                    method: Some(method.to_string()), password: Some(password.to_string()),
-                    plugin: plugin.clone(), plugin_opts: plugin_opts.clone(),
+                    method: Some(method.to_string()),
+                    password: Some(password.to_string()),
+                    plugin: plugin.clone(),
+                    plugin_opts: plugin_opts.clone(),
                     ..Default::default()
                 });
             }
@@ -145,10 +212,14 @@ fn parse_share_link(link: &str) -> Option<Node> {
                 let (method, password) = dec[..at].split_once(':').unwrap_or(("", ""));
                 let (server, port_str) = dec[at + 1..].split_once(':').unwrap_or(("", ""));
                 return Some(Node {
-                    r#type: "ss".into(), name, server: server.to_string(),
+                    r#type: "ss".into(),
+                    name,
+                    server: server.to_string(),
                     port: port_str.parse().unwrap_or(0),
-                    method: Some(method.to_string()), password: Some(password.to_string()),
-                    plugin, plugin_opts,
+                    method: Some(method.to_string()),
+                    password: Some(password.to_string()),
+                    plugin,
+                    plugin_opts,
                     ..Default::default()
                 });
             }
@@ -164,10 +235,24 @@ fn parse_share_link(link: &str) -> Option<Node> {
                 server: host.clone(),
                 port: u.port().unwrap_or(443),
                 password: Some(u.username().to_string()),
-                sni: u.query_pairs().find(|(k, _)| k == "sni").map(|(_, v)| v.into_owned()).or_else(|| Some(host.clone())),
-                network: u.query_pairs().find(|(k, _)| k == "type").map(|(_, v)| v.into_owned()).or_else(|| Some("tcp".into())),
-                host: u.query_pairs().find(|(k, _)| k == "host").map(|(_, v)| v.into_owned()),
-                path: u.query_pairs().find(|(k, _)| k == "path").map(|(_, v)| v.into_owned()),
+                sni: u
+                    .query_pairs()
+                    .find(|(k, _)| k == "sni")
+                    .map(|(_, v)| v.into_owned())
+                    .or_else(|| Some(host.clone())),
+                network: u
+                    .query_pairs()
+                    .find(|(k, _)| k == "type")
+                    .map(|(_, v)| v.into_owned())
+                    .or_else(|| Some("tcp".into())),
+                host: u
+                    .query_pairs()
+                    .find(|(k, _)| k == "host")
+                    .map(|(_, v)| v.into_owned()),
+                path: u
+                    .query_pairs()
+                    .find(|(k, _)| k == "path")
+                    .map(|(_, v)| v.into_owned()),
                 tls: Some("tls".into()),
                 ..Default::default()
             });
@@ -176,7 +261,11 @@ fn parse_share_link(link: &str) -> Option<Node> {
     if link.starts_with("vless://") {
         if let Ok(u) = Url::parse(link) {
             let host = u.host_str().unwrap_or("").to_string();
-            let q = |k: &str| u.query_pairs().find(|(x, _)| x == k).map(|(_, v)| v.into_owned());
+            let q = |k: &str| {
+                u.query_pairs()
+                    .find(|(x, _)| x == k)
+                    .map(|(_, v)| v.into_owned())
+            };
             return Some(Node {
                 r#type: "vless".into(),
                 name: name_from_hash(&u),
@@ -197,7 +286,11 @@ fn parse_share_link(link: &str) -> Option<Node> {
         }
     }
     if link.starts_with("socks5://") || link.starts_with("socks://") {
-        if let Ok(u) = Url::parse(&link.replacen("socks5://", "http://", 1).replacen("socks://", "http://", 1)) {
+        if let Ok(u) = Url::parse(
+            &link
+                .replacen("socks5://", "http://", 1)
+                .replacen("socks://", "http://", 1),
+        ) {
             return Some(Node {
                 r#type: "socks".into(),
                 name: name_from_hash(&u),
@@ -227,7 +320,10 @@ fn parse_share_link(link: &str) -> Option<Node> {
 
 // YAML 字符串安全引用（与 core_mgr::yaml_str 相同策略）
 fn yaml_safe(s: &str) -> String {
-    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || ".-_/".contains(c)) {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-_/".contains(c))
+    {
         s.to_string()
     } else {
         serde_json::to_string(s).unwrap_or_else(|_| format!("\"{}\"", s))
@@ -239,15 +335,26 @@ fn yaml_safe(s: &str) -> String {
 fn parse_ss_plugin(query: &str) -> Option<(String, String)> {
     let plugin_val = query.split('&').find_map(|kv| {
         let (k, v) = kv.split_once('=')?;
-        if k == "plugin" { Some(v) } else { None }
+        if k == "plugin" {
+            Some(v)
+        } else {
+            None
+        }
     })?;
     let spec = percent_decode_str(plugin_val);
     let mut parts = spec.split(';');
     let name = parts.next()?;
     let mut opts: Vec<(String, String)> = parts
-        .filter_map(|p| match p.split_once('=') {
-            Some((k, v)) => Some((k.to_string(), if v.is_empty() { "true".to_string() } else { v.to_string() })),
-            None => Some((p.to_string(), "true".to_string())), // 无值 flag（如 tls）
+        .map(|p| match p.split_once('=') {
+            Some((k, v)) => (
+                k.to_string(),
+                if v.is_empty() {
+                    "true".to_string()
+                } else {
+                    v.to_string()
+                },
+            ),
+            None => (p.to_string(), "true".to_string()), // 无值 flag（如 tls）
         })
         .collect();
     let (plugin, lines): (&str, Vec<String>) = match name {
@@ -264,8 +371,12 @@ fn parse_ss_plugin(query: &str) -> Option<(String, String)> {
                 }
             }
             let mut ls = vec![format!("      mode: {}", yaml_safe(&mode))];
-            if !host.is_empty() { ls.push(format!("      host: {}", yaml_safe(&host))); }
-            if !uri.is_empty() { ls.push(format!("      uri: {}", yaml_safe(&uri))); }
+            if !host.is_empty() {
+                ls.push(format!("      host: {}", yaml_safe(&host)));
+            }
+            if !uri.is_empty() {
+                ls.push(format!("      uri: {}", yaml_safe(&uri)));
+            }
             ("obfs", ls)
         }
         "v2ray-plugin" => {
@@ -283,9 +394,15 @@ fn parse_ss_plugin(query: &str) -> Option<(String, String)> {
                 }
             }
             let mut ls = vec![format!("      mode: {}", yaml_safe(&mode))];
-            if !host.is_empty() { ls.push(format!("      host: {}", yaml_safe(&host))); }
-            if !path.is_empty() { ls.push(format!("      path: {}", yaml_safe(&path))); }
-            if tls { ls.push("      tls: true".into()); }
+            if !host.is_empty() {
+                ls.push(format!("      host: {}", yaml_safe(&host)));
+            }
+            if !path.is_empty() {
+                ls.push(format!("      path: {}", yaml_safe(&path)));
+            }
+            if tls {
+                ls.push("      tls: true".into());
+            }
             ("v2ray-plugin", ls)
         }
         _ => return None,
@@ -300,13 +417,17 @@ fn parse_clash_proxies(text: &str) -> Vec<Node> {
     let mut cur: Option<Node> = None;
     let flush = |cur: &mut Option<Node>, nodes: &mut Vec<Node>| {
         if let Some(n) = cur.take() {
-            if !n.server.is_empty() && n.port > 0 { nodes.push(n); }
+            if !n.server.is_empty() && n.port > 0 {
+                nodes.push(n);
+            }
         }
     };
     for line in text.lines() {
         let l = line.trim_end();
         if !in_proxies {
-            if l.trim_start().starts_with("proxies:") { in_proxies = true; }
+            if l.trim_start().starts_with("proxies:") {
+                in_proxies = true;
+            }
             continue;
         }
         // 离开 proxies 段：遇到无缩进的顶层键（如 proxy-groups: / rules:）
@@ -328,14 +449,19 @@ fn parse_clash_proxies(text: &str) -> Vec<Node> {
                         o.insert(k, v);
                     }
                 }
-                if let Some(n) = clash_to_node(&o) { nodes.push(n); }
+                if let Some(n) = clash_to_node(&o) {
+                    nodes.push(n);
+                }
             }
             continue;
         }
         // 新节点：  - name: x
         if let Some(m) = trimmed.strip_prefix("- name:") {
             flush(&mut cur, &mut nodes);
-            cur = Some(Node { name: m.trim().trim_matches('"').to_string(), ..Default::default() });
+            cur = Some(Node {
+                name: m.trim().trim_matches('"').to_string(),
+                ..Default::default()
+            });
             continue;
         }
         // 字段行：    key: value（多行节点属性，无 - 前缀）
@@ -375,12 +501,20 @@ fn split_top_level(s: &str) -> Vec<String> {
     let mut cur = String::new();
     for c in s.chars() {
         match c {
-            '"' => { depth ^= 1; cur.push(c); }
-            ',' if depth == 0 => { parts.push(cur.clone()); cur.clear(); }
+            '"' => {
+                depth ^= 1;
+                cur.push(c);
+            }
+            ',' if depth == 0 => {
+                parts.push(cur.clone());
+                cur.clear();
+            }
             _ => cur.push(c),
         }
     }
-    if !cur.trim().is_empty() { parts.push(cur); }
+    if !cur.trim().is_empty() {
+        parts.push(cur);
+    }
     parts
 }
 
@@ -388,34 +522,72 @@ fn clash_to_node(o: &std::collections::HashMap<String, String>) -> Option<Node> 
     let t = o.get("type")?.to_string();
     let server = o.get("server").cloned().unwrap_or_default();
     let port: u16 = o.get("port").and_then(|v| v.parse().ok())?;
-    if server.is_empty() || port == 0 { return None; }
+    if server.is_empty() || port == 0 {
+        return None;
+    }
     let name = o.get("name").cloned().unwrap_or_default();
     let get = |k: &str| o.get(k).cloned();
-    let mut n = Node { r#type: t.clone(), name, server, port, ..Default::default() };
+    let mut n = Node {
+        r#type: t.clone(),
+        name,
+        server,
+        port,
+        ..Default::default()
+    };
     match t.as_str() {
         "vmess" => {
             n.uuid = get("uuid");
             n.aid = get("alterId").and_then(|v| v.parse().ok());
             n.security = get("cipher").or_else(|| Some("auto".into()));
             n.network = get("network").or_else(|| Some("tcp".into()));
-            n.tls = Some(if get("tls").as_deref() == Some("true") { "tls" } else { "" }.to_string());
+            n.tls = Some(
+                if get("tls").as_deref() == Some("true") {
+                    "tls"
+                } else {
+                    ""
+                }
+                .to_string(),
+            );
             n.sni = get("servername").or_else(|| get("sni"));
             n.host = get("host");
             n.path = get("path").or_else(|| get("ws-path"));
         }
-        "ss" => { n.method = get("cipher").or_else(|| get("method")); n.password = get("password"); }
-        "trojan" => { n.password = get("password"); n.sni = get("sni").or_else(|| get("servername")).or_else(|| Some(n.server.clone())); n.tls = Some("tls".into()); n.network = get("network").or_else(|| Some("tcp".into())); }
+        "ss" => {
+            n.method = get("cipher").or_else(|| get("method"));
+            n.password = get("password");
+        }
+        "trojan" => {
+            n.password = get("password");
+            n.sni = get("sni")
+                .or_else(|| get("servername"))
+                .or_else(|| Some(n.server.clone()));
+            n.tls = Some("tls".into());
+            n.network = get("network").or_else(|| Some("tcp".into()));
+        }
         "vless" => {
             n.uuid = get("uuid");
             n.flow = get("flow");
-            n.security = Some(if get("tls").as_deref() == Some("true") { "tls" } else { "none" }.to_string());
+            n.security = Some(
+                if get("tls").as_deref() == Some("true") {
+                    "tls"
+                } else {
+                    "none"
+                }
+                .to_string(),
+            );
             n.sni = get("servername").or_else(|| get("sni"));
             n.network = get("network").or_else(|| Some("tcp".into()));
             n.host = get("host");
             n.path = get("path").or_else(|| get("ws-path"));
         }
-        "socks5" => { n.username = get("username"); n.password = get("password"); }
-        "http" => { n.username = get("username"); n.password = get("password"); }
+        "socks5" => {
+            n.username = get("username");
+            n.password = get("password");
+        }
+        "http" => {
+            n.username = get("username");
+            n.password = get("password");
+        }
         _ => return None,
     }
     Some(n)
@@ -434,9 +606,15 @@ fn fetch_url(url: &str) -> Result<String, String> {
             match crate::core_mgr::running_proxy_port() {
                 Some(port) => match fetch_url_via_proxy(url, port) {
                     Ok(body) => Ok(body),
-                    Err(proxy_err) => Err(format!("直连失败（{}）；经本地代理重试也失败（{}）", direct_err, proxy_err)),
+                    Err(proxy_err) => Err(format!(
+                        "直连失败（{}）；经本地代理重试也失败（{}）",
+                        direct_err, proxy_err
+                    )),
                 },
-                None => Err(format!("{}（可尝试把订阅内容直接粘贴到输入框）", direct_err)),
+                None => Err(format!(
+                    "{}（可尝试把订阅内容直接粘贴到输入框）",
+                    direct_err
+                )),
             }
         }
     }
@@ -448,12 +626,13 @@ fn fetch_url_direct(url: &str) -> Result<String, String> {
         .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         .call()
         .map_err(|e| format!("拉取订阅失败: {}", e))?;
-    resp.into_string().map_err(|e| format!("读取响应失败: {}", e))
+    resp.into_string()
+        .map_err(|e| format!("读取响应失败: {}", e))
 }
 
 // 经本地 mihomo 代理拉取（解决订阅源被墙的鸡生蛋问题）
 fn fetch_url_via_proxy(url: &str, port: u16) -> Result<String, String> {
-    let proxy = ureq::Proxy::new(&format!("http://127.0.0.1:{}", port))
+    let proxy = ureq::Proxy::new(format!("http://127.0.0.1:{}", port))
         .map_err(|e| format!("代理配置无效: {}", e))?;
     let agent = ureq::AgentBuilder::new()
         .proxy(proxy)
@@ -464,7 +643,8 @@ fn fetch_url_via_proxy(url: &str, port: u16) -> Result<String, String> {
         .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         .call()
         .map_err(|e| format!("经代理拉取订阅失败: {}", e))?;
-    resp.into_string().map_err(|e| format!("读取响应失败: {}", e))
+    resp.into_string()
+        .map_err(|e| format!("读取响应失败: {}", e))
 }
 
 pub fn parse_subscription(text: &str) -> Vec<Node> {
@@ -472,14 +652,20 @@ pub fn parse_subscription(text: &str) -> Vec<Node> {
     // Clash YAML
     if source.lines().any(|l| l.starts_with("proxies:")) {
         let nodes = parse_clash_proxies(&source);
-        if !nodes.is_empty() { return dedupe_nodes(nodes); }
+        if !nodes.is_empty() {
+            return dedupe_nodes(nodes);
+        }
     }
     // 逐行 share link
     let mut nodes = Vec::new();
     for line in source.lines() {
         let l = line.trim();
-        if l.is_empty() || l.starts_with('#') { continue; }
-        if let Some(n) = parse_share_link(l) { nodes.push(n); }
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        if let Some(n) = parse_share_link(l) {
+            nodes.push(n);
+        }
     }
     dedupe_nodes(nodes)
 }
@@ -489,9 +675,16 @@ fn dedupe_nodes(nodes: Vec<Node>) -> Vec<Node> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for n in nodes {
-        let cred = n.uuid.clone().or_else(|| n.password.clone()).or_else(|| n.username.clone()).unwrap_or_default();
+        let cred = n
+            .uuid
+            .clone()
+            .or_else(|| n.password.clone())
+            .or_else(|| n.username.clone())
+            .unwrap_or_default();
         let key = format!("{}|{}|{}|{}", n.r#type, n.server, n.port, cred);
-        if seen.insert(key) { out.push(n); }
+        if seen.insert(key) {
+            out.push(n);
+        }
     }
     out
 }
@@ -507,7 +700,16 @@ pub fn parse_sub(subscription: String) -> Result<serde_json::Value, String> {
     if nodes.is_empty() {
         return Err("解析不到任何节点，请检查订阅链接".into());
     }
-    let names: Vec<String> = nodes.iter().map(|n| if n.name.is_empty() { n.server.clone() } else { n.name.clone() }).collect();
+    let names: Vec<String> = nodes
+        .iter()
+        .map(|n| {
+            if n.name.is_empty() {
+                n.server.clone()
+            } else {
+                n.name.clone()
+            }
+        })
+        .collect();
     Ok(json!({ "count": nodes.len(), "names": names }))
 }
 
@@ -580,7 +782,10 @@ mod tests {
     #[test]
     fn dedupe_removes_duplicates() {
         let base = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQxMjM@";
-        let sub = format!("{}1.2.3.4:8388#A\n{}1.2.3.4:8388#B\n{}5.6.7.8:8388#C", base, base, base);
+        let sub = format!(
+            "{}1.2.3.4:8388#A\n{}1.2.3.4:8388#B\n{}5.6.7.8:8388#C",
+            base, base, base
+        );
         let nodes = parse_subscription(&sub);
         assert_eq!(nodes.len(), 2, "同服务器同凭证去重，不同服务器保留");
         assert_eq!(nodes[0].name, "A");

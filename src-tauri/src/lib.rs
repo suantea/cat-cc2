@@ -2,7 +2,11 @@ pub mod core_mgr;
 mod proxy;
 mod subscribe;
 
-use tauri::{Manager, tray::TrayIconBuilder, menu::{Menu, MenuItem}, WindowEvent};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    Manager, WindowEvent,
+};
 
 pub fn run() {
     tauri::Builder::default()

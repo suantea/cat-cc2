@@ -32,15 +32,23 @@ fn full_flow_connect_disconnect() {
 
     // 3) status 应 running=true
     let st = status().expect("status 应可用");
-    println!("status: running={} node={} latency={} err={}", st.running, st.node, st.latency, st.last_error);
+    println!(
+        "status: running={} node={} latency={} err={}",
+        st.running, st.node, st.latency, st.last_error
+    );
     assert!(st.running, "内核应处于运行状态");
 
     // 3.5) 完整生效规则应包含 gfw 代理清单与默认直连兜底
     let eff = get_effective_rules().expect("get_effective_rules 应可用");
     let rules = eff["rules"].as_str().unwrap_or("");
     let gfw_count = eff["gfw_count"].as_u64().unwrap_or(0);
-    println!("effective rules: gfw_count={} 含DOMAIN-SUFFIX,auto={} 含MATCH,DIRECT={} 总行数={}",
-        gfw_count, rules.contains("DOMAIN-SUFFIX") && rules.contains(",auto"), rules.contains("MATCH,DIRECT"), rules.lines().count());
+    println!(
+        "effective rules: gfw_count={} 含DOMAIN-SUFFIX,auto={} 含MATCH,DIRECT={} 总行数={}",
+        gfw_count,
+        rules.contains("DOMAIN-SUFFIX") && rules.contains(",auto"),
+        rules.contains("MATCH,DIRECT"),
+        rules.lines().count()
+    );
     assert!(gfw_count > 0, "应包含 gfw 代理清单");
     assert!(rules.contains("MATCH,DIRECT"), "应有默认直连兜底");
     assert!(rules.contains(",auto"), "应有走代理规则");
@@ -56,7 +64,10 @@ fn full_flow_connect_disconnect() {
     // 5) 重启后仍应运行
     std::thread::sleep(std::time::Duration::from_millis(3000));
     let st2 = status().expect("status 应可用");
-    println!("重启后 status: running={} err={}", st2.running, st2.last_error);
+    println!(
+        "重启后 status: running={} err={}",
+        st2.running, st2.last_error
+    );
     assert!(st2.running, "保存规则重启后内核应继续运行");
 
     // 6) disconnect

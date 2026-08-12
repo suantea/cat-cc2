@@ -61,10 +61,19 @@ fn find_core() -> Option<PathBuf> {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let candidates = [
         exe_dir.join("mihomo-core.exe"),
-        exe_dir.join("..").join("..").join("mihomo-core.exe"),          // src-tauri/
-        exe_dir.join("..").join("..").join("..").join("mihomo-core.exe"), // 项目根（main exe）
-        exe_dir.join("..").join("..").join("..").join("..").join("mihomo-core.exe"), // 项目根（测试 exe）
-        manifest.join("..").join("mihomo-core.exe"),                    // 编译期：src-tauri/../ = 项目根
+        exe_dir.join("..").join("..").join("mihomo-core.exe"), // src-tauri/
+        exe_dir
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("mihomo-core.exe"), // 项目根（main exe）
+        exe_dir
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("mihomo-core.exe"), // 项目根（测试 exe）
+        manifest.join("..").join("mihomo-core.exe"),           // 编译期：src-tauri/../ = 项目根
     ];
     candidates.into_iter().find(|p| p.exists())
 }
@@ -75,7 +84,11 @@ fn app_base() -> PathBuf {
         let dir = exe.parent().unwrap_or(Path::new(".")).to_path_buf();
         // 开发模式（target/debug/ 下无 mihomo-core）→ 用项目根
         if !dir.join("mihomo-core.exe").exists() {
-            if let Some(root) = dir.parent().and_then(|d| d.parent()).and_then(|d| d.parent()) {
+            if let Some(root) = dir
+                .parent()
+                .and_then(|d| d.parent())
+                .and_then(|d| d.parent())
+            {
                 return root.join("config");
             }
         }
@@ -89,7 +102,9 @@ fn port_free(port: u16) -> bool {
 }
 
 fn pick_port(pref: u16) -> u16 {
-    if port_free(pref) { return pref; }
+    if port_free(pref) {
+        return pref;
+    }
     (20000..65535u16).find(|&p| port_free(p)).unwrap_or(pref)
 }
 
@@ -111,7 +126,9 @@ fn pid_alive(pid: u32) -> bool {
 fn wait_pid_exit(pid: u32, max_wait: Duration) {
     let deadline = std::time::Instant::now() + max_wait;
     while std::time::Instant::now() < deadline {
-        if !pid_alive(pid) { return; }
+        if !pid_alive(pid) {
+            return;
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -128,7 +145,9 @@ fn stop_kernel(st: &mut CoreState) -> Option<u32> {
         let _ = Command::new("taskkill")
             .args(["/F", "/PID", &p.to_string()])
             .creation_flags(CREATE_NO_WINDOW)
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .output();
     }
     pid
@@ -136,7 +155,10 @@ fn stop_kernel(st: &mut CoreState) -> Option<u32> {
 
 // ---------- 配置生成 ----------
 fn yaml_str(s: &str) -> String {
-    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || ".-_/".contains(c)) {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-_/".contains(c))
+    {
         s.to_string()
     } else {
         serde_json::to_string(s).unwrap_or_else(|_| format!("\"{}\"", s))
@@ -145,14 +167,31 @@ fn yaml_str(s: &str) -> String {
 
 fn outbound_yaml(n: &Node) -> Option<String> {
     let name = yaml_str(&n.name);
-    let mut parts: Vec<String> = vec![format!("  - name: {}", name), format!("    type: {}", n.r#type)];
-    let push = |parts: &mut Vec<String>, line: String| { parts.push(line); };
+    let mut parts: Vec<String> = vec![
+        format!("  - name: {}", name),
+        format!("    type: {}", n.r#type),
+    ];
+    let push = |parts: &mut Vec<String>, line: String| {
+        parts.push(line);
+    };
     match n.r#type.as_str() {
         "ss" => {
             push(&mut parts, format!("    server: {}", n.server));
             push(&mut parts, format!("    port: {}", n.port));
-            push(&mut parts, format!("    cipher: {}", yaml_str(n.method.as_deref().unwrap_or("aes-256-gcm"))));
-            push(&mut parts, format!("    password: {}", yaml_str(n.password.as_deref().unwrap_or(""))));
+            push(
+                &mut parts,
+                format!(
+                    "    cipher: {}",
+                    yaml_str(n.method.as_deref().unwrap_or("aes-256-gcm"))
+                ),
+            );
+            push(
+                &mut parts,
+                format!(
+                    "    password: {}",
+                    yaml_str(n.password.as_deref().unwrap_or(""))
+                ),
+            );
             if let Some(p) = n.plugin.as_deref() {
                 push(&mut parts, format!("    plugin: {}", yaml_str(p)));
                 if let Some(o) = n.plugin_opts.as_deref() {
@@ -164,29 +203,76 @@ fn outbound_yaml(n: &Node) -> Option<String> {
         "trojan" => {
             push(&mut parts, format!("    server: {}", n.server));
             push(&mut parts, format!("    port: {}", n.port));
-            push(&mut parts, format!("    password: {}", yaml_str(n.password.as_deref().unwrap_or(""))));
-            push(&mut parts, format!("    sni: {}", yaml_str(n.sni.as_deref().unwrap_or(&n.server))));
+            push(
+                &mut parts,
+                format!(
+                    "    password: {}",
+                    yaml_str(n.password.as_deref().unwrap_or(""))
+                ),
+            );
+            push(
+                &mut parts,
+                format!(
+                    "    sni: {}",
+                    yaml_str(n.sni.as_deref().unwrap_or(&n.server))
+                ),
+            );
             if n.network.as_deref() == Some("ws") {
                 push(&mut parts, "    network: ws".into());
-                push(&mut parts, format!("    ws-opts:\n      path: {}\n      headers:\n        Host: {}", yaml_str(n.path.as_deref().unwrap_or("/")), yaml_str(n.host.as_deref().unwrap_or(n.sni.as_deref().unwrap_or(&n.server)))));
+                push(
+                    &mut parts,
+                    format!(
+                        "    ws-opts:\n      path: {}\n      headers:\n        Host: {}",
+                        yaml_str(n.path.as_deref().unwrap_or("/")),
+                        yaml_str(
+                            n.host
+                                .as_deref()
+                                .unwrap_or(n.sni.as_deref().unwrap_or(&n.server))
+                        )
+                    ),
+                );
             }
             push(&mut parts, "    udp: true".into());
         }
         "vmess" => {
             push(&mut parts, format!("    server: {}", n.server));
             push(&mut parts, format!("    port: {}", n.port));
-            push(&mut parts, format!("    uuid: {}", yaml_str(n.uuid.as_deref().unwrap_or(""))));
+            push(
+                &mut parts,
+                format!("    uuid: {}", yaml_str(n.uuid.as_deref().unwrap_or(""))),
+            );
             push(&mut parts, format!("    alterId: {}", n.aid.unwrap_or(0)));
-            push(&mut parts, format!("    cipher: {}", yaml_str(n.security.as_deref().unwrap_or("auto"))));
+            push(
+                &mut parts,
+                format!(
+                    "    cipher: {}",
+                    yaml_str(n.security.as_deref().unwrap_or("auto"))
+                ),
+            );
             if n.tls.as_deref() == Some("tls") || n.security.as_deref() == Some("tls") {
                 push(&mut parts, "    tls: true".into());
-                push(&mut parts, format!("    servername: {}", yaml_str(n.sni.as_deref().unwrap_or(&n.server))));
+                push(
+                    &mut parts,
+                    format!(
+                        "    servername: {}",
+                        yaml_str(n.sni.as_deref().unwrap_or(&n.server))
+                    ),
+                );
             }
             if n.network.as_deref() == Some("ws") {
                 push(&mut parts, "    network: ws".into());
-                push(&mut parts, format!("    ws-opts:\n      path: {}", yaml_str(n.path.as_deref().unwrap_or("/"))));
+                push(
+                    &mut parts,
+                    format!(
+                        "    ws-opts:\n      path: {}",
+                        yaml_str(n.path.as_deref().unwrap_or("/"))
+                    ),
+                );
                 if let Some(h) = n.host.as_deref() {
-                    push(&mut parts, format!("      headers:\n        Host: {}", yaml_str(h)));
+                    push(
+                        &mut parts,
+                        format!("      headers:\n        Host: {}", yaml_str(h)),
+                    );
                 }
             }
             push(&mut parts, "    udp: true".into());
@@ -194,23 +280,59 @@ fn outbound_yaml(n: &Node) -> Option<String> {
         "vless" => {
             push(&mut parts, format!("    server: {}", n.server));
             push(&mut parts, format!("    port: {}", n.port));
-            push(&mut parts, format!("    uuid: {}", yaml_str(n.uuid.as_deref().unwrap_or(""))));
-            if let Some(f) = n.flow.as_deref() { if !f.is_empty() { push(&mut parts, format!("    flow: {}", yaml_str(f))); } }
+            push(
+                &mut parts,
+                format!("    uuid: {}", yaml_str(n.uuid.as_deref().unwrap_or(""))),
+            );
+            if let Some(f) = n.flow.as_deref() {
+                if !f.is_empty() {
+                    push(&mut parts, format!("    flow: {}", yaml_str(f)));
+                }
+            }
             if n.security.as_deref() == Some("reality") {
-                push(&mut parts, format!("    tls: true\n    servername: {}\n    client-fingerprint: {}", yaml_str(n.sni.as_deref().unwrap_or(&n.server)), yaml_str(n.reality_fp.as_deref().unwrap_or("chrome"))));
+                push(
+                    &mut parts,
+                    format!(
+                        "    tls: true\n    servername: {}\n    client-fingerprint: {}",
+                        yaml_str(n.sni.as_deref().unwrap_or(&n.server)),
+                        yaml_str(n.reality_fp.as_deref().unwrap_or("chrome"))
+                    ),
+                );
                 if let Some(pbk) = n.reality_pbk.as_deref() {
                     if !pbk.is_empty() {
-                        push(&mut parts, format!("    reality-opts:\n      public-key: {}\n      short-id: {}", yaml_str(pbk), yaml_str(n.reality_sid.as_deref().unwrap_or(""))));
+                        push(
+                            &mut parts,
+                            format!(
+                                "    reality-opts:\n      public-key: {}\n      short-id: {}",
+                                yaml_str(pbk),
+                                yaml_str(n.reality_sid.as_deref().unwrap_or(""))
+                            ),
+                        );
                     }
                 }
             } else if n.security.as_deref() == Some("tls") || n.tls.as_deref() == Some("tls") {
-                push(&mut parts, format!("    tls: true\n    servername: {}", yaml_str(n.sni.as_deref().unwrap_or(&n.server))));
+                push(
+                    &mut parts,
+                    format!(
+                        "    tls: true\n    servername: {}",
+                        yaml_str(n.sni.as_deref().unwrap_or(&n.server))
+                    ),
+                );
             }
             if n.network.as_deref() == Some("ws") {
                 push(&mut parts, "    network: ws".into());
-                push(&mut parts, format!("    ws-opts:\n      path: {}", yaml_str(n.path.as_deref().unwrap_or("/"))));
+                push(
+                    &mut parts,
+                    format!(
+                        "    ws-opts:\n      path: {}",
+                        yaml_str(n.path.as_deref().unwrap_or("/"))
+                    ),
+                );
                 if let Some(h) = n.host.as_deref() {
-                    push(&mut parts, format!("      headers:\n        Host: {}", yaml_str(h)));
+                    push(
+                        &mut parts,
+                        format!("      headers:\n        Host: {}", yaml_str(h)),
+                    );
                 }
             }
             push(&mut parts, "    udp: true".into());
@@ -218,12 +340,34 @@ fn outbound_yaml(n: &Node) -> Option<String> {
         "socks" => {
             push(&mut parts, format!("    server: {}", n.server));
             push(&mut parts, format!("    port: {}", n.port));
-            if let Some(u) = n.username.as_deref() { if !u.is_empty() { push(&mut parts, format!("    username: {}\n    password: {}", yaml_str(u), yaml_str(n.password.as_deref().unwrap_or("")))); } }
+            if let Some(u) = n.username.as_deref() {
+                if !u.is_empty() {
+                    push(
+                        &mut parts,
+                        format!(
+                            "    username: {}\n    password: {}",
+                            yaml_str(u),
+                            yaml_str(n.password.as_deref().unwrap_or(""))
+                        ),
+                    );
+                }
+            }
         }
         "http" => {
             push(&mut parts, format!("    server: {}", n.server));
             push(&mut parts, format!("    port: {}", n.port));
-            if let Some(u) = n.username.as_deref() { if !u.is_empty() { push(&mut parts, format!("    username: {}\n    password: {}", yaml_str(u), yaml_str(n.password.as_deref().unwrap_or("")))); } }
+            if let Some(u) = n.username.as_deref() {
+                if !u.is_empty() {
+                    push(
+                        &mut parts,
+                        format!(
+                            "    username: {}\n    password: {}",
+                            yaml_str(u),
+                            yaml_str(n.password.as_deref().unwrap_or(""))
+                        ),
+                    );
+                }
+            }
         }
         _ => return None,
     }
@@ -285,7 +429,9 @@ fn load_gfwlist() -> Vec<String> {
     content
         .lines()
         .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('!') && !l.starts_with('['))
+        .filter(|l| {
+            !l.is_empty() && !l.starts_with('#') && !l.starts_with('!') && !l.starts_with('[')
+        })
         .map(|l| l.to_string())
         .collect()
 }
@@ -336,7 +482,9 @@ fn build_config(nodes: &[Node], mixed_port: u16, ctrl_port: u16) -> Option<Strin
             names.push(yaml_str(&n.name));
         }
     }
-    if outbounds.is_empty() { return None; }
+    if outbounds.is_empty() {
+        return None;
+    }
     let rules_yaml = build_rules()
         .lines()
         .map(|l| l.trim())
@@ -355,18 +503,52 @@ fn build_config(nodes: &[Node], mixed_port: u16, ctrl_port: u16) -> Option<Strin
 }
 
 // ---------- 校验与启动 ----------
+// mihomo -t 校验配置；本机线程资源紧张时 mihomo 可能挂起而非崩溃，加超时防止连接永久卡住
+const VALIDATE_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn validate_config(core: &Path, temp: &Path, config: &Path) -> bool {
-    Command::new(core)
-        .args(["-t", "-d", temp.to_str().unwrap_or(""), "-f", config.to_str().unwrap_or("")])
+    let Ok(mut child) = Command::new(core)
+        .args([
+            "-t",
+            "-d",
+            temp.to_str().unwrap_or(""),
+            "-f",
+            config.to_str().unwrap_or(""),
+        ])
         .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let deadline = std::time::Instant::now() + VALIDATE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return st.success(),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    // 超时：按校验失败处理（拒绝启动），并杀掉挂起的 mihomo -t
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(_) => return false,
+        }
+    }
 }
 
 fn spawn_core(st: &CoreState) -> Result<Child, String> {
     Command::new(&st.core_bin)
-        .args(["-d", st.temp_dir.to_str().unwrap_or(""), "-f", st.config_file.to_str().unwrap_or("")])
+        .args([
+            "-d",
+            st.temp_dir.to_str().unwrap_or(""),
+            "-f",
+            st.config_file.to_str().unwrap_or(""),
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -382,7 +564,10 @@ fn start_core_locked(st: &mut CoreState) -> Result<(), String> {
     // 生成配置
     let cfg = match build_config(&st.nodes, st.mixed_port, st.ctrl_port) {
         Some(c) => c,
-        None => { st.status.last_error = "无有效节点".into(); return Err("无有效节点".into()); }
+        None => {
+            st.status.last_error = "无有效节点".into();
+            return Err("无有效节点".into());
+        }
     };
     std::fs::create_dir_all(&st.temp_dir).map_err(|e| e.to_string())?;
     let mut f = std::fs::File::create(&st.config_file).map_err(|e| e.to_string())?;
@@ -426,7 +611,8 @@ fn start_core_locked(st: &mut CoreState) -> Result<(), String> {
             std::thread::sleep(Duration::from_millis(delay_ms));
             let mut s2 = state().lock().unwrap();
             if !s2.intentional_stop && s2.generation == gen {
-                s2.status.last_error = format!("内核意外退出，自动重启（第 {} 次）", s2.status.retries);
+                s2.status.last_error =
+                    format!("内核意外退出，自动重启（第 {} 次）", s2.status.retries);
                 let _ = start_core_locked(&mut s2);
             }
         } else {
@@ -447,17 +633,31 @@ fn query_node_status() {
         let s = state().lock().unwrap();
         (s.status.running, s.ctrl_port)
     };
-    if !running { return; }
+    if !running {
+        return;
+    }
     let base = format!("http://127.0.0.1:{}", ctrl_port);
     let auto_url = format!("{}/proxies/auto", base);
     if let Ok(resp) = ureq::get(&auto_url).timeout(Duration::from_secs(2)).call() {
         if let Ok(text) = resp.into_string() {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
                 let mut s = state().lock().unwrap();
-                s.status.node = v.get("now").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                let has_hist = v.get("history").and_then(|x| x.as_array()).map(|a| !a.is_empty()).unwrap_or(false);
+                s.status.node = v
+                    .get("now")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let has_hist = v
+                    .get("history")
+                    .and_then(|x| x.as_array())
+                    .map(|a| !a.is_empty())
+                    .unwrap_or(false);
                 if has_hist {
-                    if let Some(last) = v.get("history").and_then(|x| x.as_array()).and_then(|a| a.last()) {
+                    if let Some(last) = v
+                        .get("history")
+                        .and_then(|x| x.as_array())
+                        .and_then(|a| a.last())
+                    {
                         s.status.latency = last.get("delay").and_then(|x| x.as_u64()).unwrap_or(0);
                     }
                 } else {
@@ -466,12 +666,17 @@ fn query_node_status() {
                 drop(s);
                 // history 为空 → 主动触发一次测速（节流：距上次至少 5s）
                 if !has_hist {
-                    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
                     let last_probe = state().lock().unwrap().last_probe_ms;
                     if now_ms.saturating_sub(last_probe) >= 5000 {
                         state().lock().unwrap().last_probe_ms = now_ms;
                         let delay_url = format!("{}/proxies/auto/delay?url=http://www.gstatic.com/generate_204&timeout=5000", base);
-                        if let Ok(dresp) = ureq::get(&delay_url).timeout(Duration::from_secs(7)).call() {
+                        if let Ok(dresp) =
+                            ureq::get(&delay_url).timeout(Duration::from_secs(7)).call()
+                        {
                             if let Ok(dtext) = dresp.into_string() {
                                 if let Ok(dv) = serde_json::from_str::<serde_json::Value>(&dtext) {
                                     let mut st = state().lock().unwrap();
@@ -533,7 +738,11 @@ pub fn disconnect() -> Result<serde_json::Value, String> {
 // 当前运行中内核的 mixed 端口（供订阅拉取经本地代理重试）
 pub fn running_proxy_port() -> Option<u16> {
     let s = state().lock().unwrap();
-    if s.status.running { Some(s.mixed_port) } else { None }
+    if s.status.running {
+        Some(s.mixed_port)
+    } else {
+        None
+    }
 }
 
 #[tauri::command]
@@ -581,7 +790,15 @@ mod tests {
     use super::*;
 
     fn ss_node() -> Node {
-        Node { r#type: "ss".into(), name: "s1".into(), server: "1.2.3.4".into(), port: 8388, method: Some("aes-256-gcm".into()), password: Some("pw".into()), ..Default::default() }
+        Node {
+            r#type: "ss".into(),
+            name: "s1".into(),
+            server: "1.2.3.4".into(),
+            port: 8388,
+            method: Some("aes-256-gcm".into()),
+            password: Some("pw".into()),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -615,7 +832,21 @@ mod tests {
 
     #[test]
     fn outbound_vmess_ws_tls() {
-        let n = Node { r#type: "vmess".into(), name: "v1".into(), server: "5.6.7.8".into(), port: 443, uuid: Some("u1".into()), aid: Some(0), security: Some("auto".into()), tls: Some("tls".into()), network: Some("ws".into()), host: Some("h.com".into()), path: Some("/p".into()), sni: Some("h.com".into()), ..Default::default() };
+        let n = Node {
+            r#type: "vmess".into(),
+            name: "v1".into(),
+            server: "5.6.7.8".into(),
+            port: 443,
+            uuid: Some("u1".into()),
+            aid: Some(0),
+            security: Some("auto".into()),
+            tls: Some("tls".into()),
+            network: Some("ws".into()),
+            host: Some("h.com".into()),
+            path: Some("/p".into()),
+            sni: Some("h.com".into()),
+            ..Default::default()
+        };
         let y = outbound_yaml(&n).expect("应生成");
         assert!(y.contains("tls: true"));
         assert!(y.contains("network: ws"));
@@ -625,7 +856,19 @@ mod tests {
 
     #[test]
     fn outbound_vless_reality() {
-        let n = Node { r#type: "vless".into(), name: "r1".into(), server: "9.9.9.9".into(), port: 443, uuid: Some("u2".into()), security: Some("reality".into()), sni: Some("real.com".into()), reality_pbk: Some("pbk".into()), reality_sid: Some("sid".into()), reality_fp: Some("chrome".into()), ..Default::default() };
+        let n = Node {
+            r#type: "vless".into(),
+            name: "r1".into(),
+            server: "9.9.9.9".into(),
+            port: 443,
+            uuid: Some("u2".into()),
+            security: Some("reality".into()),
+            sni: Some("real.com".into()),
+            reality_pbk: Some("pbk".into()),
+            reality_sid: Some("sid".into()),
+            reality_fp: Some("chrome".into()),
+            ..Default::default()
+        };
         let y = outbound_yaml(&n).expect("应生成");
         assert!(y.contains("reality-opts:"));
         assert!(y.contains("public-key: pbk"));
@@ -635,7 +878,17 @@ mod tests {
 
     #[test]
     fn outbound_trojan_ws() {
-        let n = Node { r#type: "trojan".into(), name: "t1".into(), server: "t.com".into(), port: 443, password: Some("pw".into()), network: Some("ws".into()), path: Some("/w".into()), host: Some("h.com".into()), ..Default::default() };
+        let n = Node {
+            r#type: "trojan".into(),
+            name: "t1".into(),
+            server: "t.com".into(),
+            port: 443,
+            password: Some("pw".into()),
+            network: Some("ws".into()),
+            path: Some("/w".into()),
+            host: Some("h.com".into()),
+            ..Default::default()
+        };
         let y = outbound_yaml(&n).expect("应生成");
         assert!(y.contains("network: ws"));
         assert!(y.contains("path: /w"));
@@ -643,7 +896,15 @@ mod tests {
 
     #[test]
     fn outbound_socks_auth() {
-        let n = Node { r#type: "socks".into(), name: "k1".into(), server: "3.3.3.3".into(), port: 1080, username: Some("u".into()), password: Some("p".into()), ..Default::default() };
+        let n = Node {
+            r#type: "socks".into(),
+            name: "k1".into(),
+            server: "3.3.3.3".into(),
+            port: 1080,
+            username: Some("u".into()),
+            password: Some("p".into()),
+            ..Default::default()
+        };
         let y = outbound_yaml(&n).expect("应生成");
         assert!(y.contains("username: u"));
         assert!(y.contains("password: p"));
@@ -651,22 +912,33 @@ mod tests {
 
     #[test]
     fn outbound_unknown_type_rejected() {
-        let n = Node { r#type: "unknown".into(), ..Default::default() };
+        let n = Node {
+            r#type: "unknown".into(),
+            ..Default::default()
+        };
         assert!(outbound_yaml(&n).is_none());
     }
 
     #[test]
     fn build_rules_structure() {
-        let user = "# 注释\nIP-CIDR,127.0.0.0/8,DIRECT\nMATCH,PROXY\nDOMAIN-SUFFIX,baidu.com,DIRECT";
+        let user =
+            "# 注释\nIP-CIDR,127.0.0.0/8,DIRECT\nMATCH,PROXY\nDOMAIN-SUFFIX,baidu.com,DIRECT";
         let gfw = vec!["example.com".to_string(), "blocked.org".to_string()];
         let rules = build_rules_from(user, &gfw);
         let lines: Vec<&str> = rules.lines().collect();
         assert!(lines.contains(&"IP-CIDR,127.0.0.0/8,DIRECT"));
         assert!(lines.contains(&"DOMAIN-SUFFIX,baidu.com,DIRECT"));
-        assert!(!rules.contains("MATCH,PROXY"), "用户 MATCH 行应被跳过（系统统一生成）");
+        assert!(
+            !rules.contains("MATCH,PROXY"),
+            "用户 MATCH 行应被跳过（系统统一生成）"
+        );
         assert!(lines.contains(&"DOMAIN-SUFFIX,example.com,auto"));
         assert!(lines.contains(&"DOMAIN-SUFFIX,blocked.org,auto"));
-        assert_eq!(lines.last(), Some(&"MATCH,DIRECT"), "最后一行应为默认直连兜底");
+        assert_eq!(
+            lines.last(),
+            Some(&"MATCH,DIRECT"),
+            "最后一行应为默认直连兜底"
+        );
     }
 
     #[test]

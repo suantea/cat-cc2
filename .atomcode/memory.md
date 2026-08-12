@@ -1,0 +1,1 @@
+- Cat CC2 的 src-tauri/target/ 是从旧位置（D:\WEB 开发\03-个人工具面板\Cat CC2）连同项目一起拷贝来的，release 构建产物内嵌旧绝对路径会导致构建失败（tauri 权限文件读取报错）；首次在备份目录构建 release 前需 cargo clean --release
