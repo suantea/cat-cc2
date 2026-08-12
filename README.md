@@ -10,6 +10,7 @@
 - 自定义规则编辑，保存后自动重启内核立即生效
 - 内核意外退出自动重启（最多 3 次，指数退避 1s/2s/4s）
 - 关闭窗口最小化到托盘，托盘退出 = 停内核 + 还原系统代理
+- 异常退出/强杀后自愈：下次启动自动还原残留的死系统代理，网页不会异常
 
 ## 快速开始
 
@@ -39,7 +40,7 @@ CARGO_BUILD_JOBS=2 cargo build --release -j 2          # release 构建（低并
 src-tauri/src/
   subscribe.rs   订阅拉取/解析（share link、Clash YAML、base64、SIP002 plugin）
   core_mgr.rs    mihomo 内核管理：配置生成、启动校验、进程监控、connect/disconnect
-  proxy.rs       Windows 系统代理（注册表 + InternetSetOption 刷新）
+  proxy.rs       Windows 系统代理（注册表 + InternetSetOption 刷新 + 残留自愈）
   lib.rs         Tauri 入口、托盘、窗口事件
 src-tauri/routes/   内置 gfw 名单（可被外部覆盖）
 dist/index.html     前端界面（单页，无构建流程）

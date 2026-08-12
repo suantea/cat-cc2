@@ -19,10 +19,11 @@
 - `MATCH,DIRECT` → **其余默认直连**
 - 注意：mihomo 的 `DOMAIN-SUFFIX` **不支持单条多域名**（旧 sing-box 的 domain_suffix 数组语法不兼容），必须一条一域名；规则里禁止用户 MATCH 行（系统统一生成）
 
-## 防崩溃三层设计
+## 防崩溃与异常恢复设计
 1. **配置极小化**：无超大规则列表（旧 Cat CC 崩溃根因是 4000+ domain_suffix 塞进 sing-box 单条 rule）
 2. **启动前校验**：`mihomo -t` 验配置，失败不启动
 3. **运行时监控**：mihomo 意外退出 → 自动重启（最多 3 次，指数退避 1s/2s/4s）→ 仍失败则报错，不无限重试；重启竞态用 `generation` 计数防旧监控线程误重启
+4. **残留自愈**：启动时检测系统代理指向本地端口但无监听（异常退出/强杀残留）→ 自动还原；断开/崩溃放弃重启时只清理本程序开启的代理（`proxy_enabled` 标记，不误关其他代理工具）
 
 ## Tech
 - Rust（edition 2021），依赖：tauri 2、serde/serde_json、base64、url、ureq
@@ -56,6 +57,7 @@ CARGO_BUILD_JOBS=2 cargo build --release -j 2   # 构建 release（低并行避�
 - 系统代理：写注册表后必须调 `InternetSetOption`（SETTINGS_CHANGED + REFRESH）通知系统刷新，否则不生效
 - `gfwlist` 外部覆盖文件存在但为空时回退内置名单（防代理全失效）
 - 子进程 spawn 用 `Stdio::null()` 隔离 stdout，避免挂起调用方
+- 残留代理自愈：`proxy.rs::restore_stale_proxy_if_dead` 启动时检查，本地代理端口无监听 → 还原；远程代理 / 有监听的端口一律不动
 
 ## 明确砍掉（相对旧 Cat CC）
 订阅分组、手动节点切换、手动测速、ip-check、Clash 导出、SSE 日志流、多 profile 管理。failover 交给 mihomo url-test。
