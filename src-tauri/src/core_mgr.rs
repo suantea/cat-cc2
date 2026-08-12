@@ -19,6 +19,8 @@ pub struct CoreStatus {
     pub latency: u64,
     pub last_error: String,
     pub retries: u32,
+    pub download_total: u64, // 累计下行字节（内核启动以来）
+    pub upload_total: u64,   // 累计上行字节（内核启动以来）
 }
 
 struct CoreState {
@@ -495,7 +497,7 @@ fn build_config(nodes: &[Node], mixed_port: u16, ctrl_port: u16) -> Option<Strin
         .collect::<Vec<_>>()
         .join("\n");
     let cfg = format!(
-        "mixed-port: {}\nallow-lan: false\nmode: rule\nlog-level: warning\nexternal-controller: 127.0.0.1:{}\nproxies:\n{}\nproxy-groups:\n  - name: auto\n    type: url-test\n    url: http://www.gstatic.com/generate_204\n    interval: 180\n    tolerance: 300\n    proxies:\n{}\nrules:\n{}",
+        "mixed-port: {}\nallow-lan: false\nmode: rule\nlog-level: warning\nlog-file: history.log\nexternal-controller: 127.0.0.1:{}\nproxies:\n{}\nproxy-groups:\n  - name: auto\n    type: url-test\n    url: http://www.gstatic.com/generate_204\n    interval: 180\n    tolerance: 300\n    proxies:\n{}\nrules:\n{}",
         mixed_port, ctrl_port,
         outbounds.join("\n"),
         names.iter().map(|n| format!("      - {}", n)).collect::<Vec<_>>().join("\n"),
@@ -698,6 +700,23 @@ fn query_node_status() {
             }
         }
     }
+    // 累计流量（内核启动以来）：/connections 返回 downloadTotal/uploadTotal
+    let conn_url = format!("{}/connections", base);
+    if let Ok(resp) = ureq::get(&conn_url).timeout(Duration::from_secs(2)).call() {
+        if let Ok(text) = resp.into_string() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                let mut s = state().lock().unwrap();
+                s.status.download_total = v
+                    .get("downloadTotal")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0);
+                s.status.upload_total = v
+                    .get("uploadTotal")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0);
+            }
+        }
+    }
 }
 
 // ---------- 命令 ----------
@@ -767,6 +786,23 @@ pub fn status() -> Result<CoreStatus, String> {
 #[tauri::command]
 pub fn get_rules() -> Result<String, String> {
     Ok(load_user_rules())
+}
+
+// 读取内核日志尾部（mihomo 的 log-file：config/temp/history.log）；limit 为最大行数
+#[tauri::command]
+pub fn get_logs(limit: Option<usize>) -> Result<String, String> {
+    let log_file = {
+        let st = state().lock().unwrap();
+        st.temp_dir.join("history.log")
+    };
+    let limit = limit.unwrap_or(100);
+    let content = match std::fs::read_to_string(&log_file) {
+        Ok(c) => c,
+        Err(_) => return Ok(String::new()), // 未连接或无日志
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.len().saturating_sub(limit);
+    Ok(lines[start..].join("\n"))
 }
 
 // 返回完整生效规则（用户自定义 + gfw 代理清单 + MATCH 兜底），供界面只读展示

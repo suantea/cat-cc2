@@ -89,6 +89,7 @@
         <div class="stat"><div class="k">延迟</div><div class="v" id="stLatency">—</div></div>
         <div class="stat"><div class="k">重启次数</div><div class="v" id="stRetries">0</div></div>
         <div class="stat full"><div class="k">最近错误</div><div class="v" id="stError" style="color:var(--muted)">无</div></div>
+        <div class="stat full"><div class="k">流量（下行 ↓ / 上行 ↑，本次连接累计）</div><div class="v" id="stTraffic">—</div></div>
       </div>
     </div>
     <div class="card">
@@ -102,11 +103,25 @@
       </div>
       <div class="hint">规则格式：<code>类型,参数,DIRECT/auto</code>，例如 <code>DOMAIN-SUFFIX,baidu.com,DIRECT</code>。保存后自动重启内核立即生效（未连接时保存，下次连接生效）。</div>
     </div>
+    <div class="card">
+      <details>
+        <summary style="cursor:pointer; color:var(--muted); font-size:12px;">运行日志（mihomo 内核，最近 200 行）</summary>
+        <textarea id="logs" readonly style="margin-top:8px; min-height:120px; font-family:Consolas,monospace; font-size:11px; color:var(--muted);"></textarea>
+      </details>
+    </div>
   </main>
 
 <script>
   const $ = id => document.getElementById(id);
   const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+
+  function fmtBytes(n) {
+    if (!n) return '0 B';
+    const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (n >= 100 ? n.toFixed(0) : n.toFixed(1)) + ' ' + u[i];
+  }
 
   function setState(s) {
     const running = !!s.running;
@@ -119,6 +134,7 @@
     $('stRetries').textContent = s.retries || 0;
     $('stError').textContent = s.last_error || '无';
     $('stError').style.color = s.last_error ? 'var(--red)' : 'var(--muted)';
+    $('stTraffic').textContent = fmtBytes(s.download_total || 0) + ' ↓ / ' + fmtBytes(s.upload_total || 0) + ' ↑';
     $('connectBtn').disabled = running;
     $('stopBtn').disabled = !running;
   }
@@ -133,6 +149,10 @@
       const s = await invoke('status');
       setState(s);
     } catch (e) { console.error('status err', e); }
+    try {
+      const logs = await invoke('get_logs', { limit: 200 });
+      $('logs').value = logs;
+    } catch (e) { /* 日志获取失败忽略 */ }
   }
 
   $('connectBtn').onclick = async () => {

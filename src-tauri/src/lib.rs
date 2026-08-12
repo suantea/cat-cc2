@@ -57,6 +57,7 @@ pub fn run() {
             core_mgr::disconnect,
             core_mgr::status,
             core_mgr::get_rules,
+            core_mgr::get_logs,
             core_mgr::get_effective_rules,
             core_mgr::save_rules,
             proxy::set_system_proxy,
