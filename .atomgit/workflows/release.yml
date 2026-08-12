@@ -1,6 +1,7 @@
-# Cat CC2 发行版自动构建流水线（AtomGit Actions 兼容）
+# Cat CC2 发行版自动构建流水线（AtomGit 流水线）
+# 注意：AtomGit 只扫描 .atomgit/workflows/*.yml（不是 .github/workflows/）
+# 前置：需在仓库「流水线」页面启用流水线功能，启用后做一次提交触发系统同步
 # 触发：推送 v* 版本 tag（如 v2.0.0）或手动运行
-# 作用：在 Windows 构建机编译 release exe 并自动上传到对应 tag 的发行版页面
 name: release
 
 on:
