@@ -11,6 +11,8 @@ use tauri::{
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            // 启动自愈：上次异常退出/崩溃残留的死系统代理 → 还原（防止网页访问异常）
+            let _ = crate::proxy::restore_stale_proxy_if_dead();
             // 关闭窗口 = 最小化到托盘（隐藏），不退出程序；退出走托盘菜单
             if let Some(window) = app.get_webview_window("main") {
                 let w = window.clone();
@@ -35,7 +37,11 @@ pub fn run() {
                             let _ = w.set_focus();
                         }
                     }
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        // 退出前清理：停内核 + 还原本程序开启的系统代理
+                        let _ = crate::core_mgr::disconnect();
+                        app.exit(0);
+                    }
                     _ => {}
                 });
             // 使用默认窗口图标（icon.ico）

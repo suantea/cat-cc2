@@ -33,6 +33,7 @@ struct CoreState {
     temp_dir: PathBuf,
     config_file: PathBuf,
     core_bin: PathBuf,
+    proxy_enabled: bool, // 系统代理是否由本程序开启（断开/退出时只清理自己的）
 }
 
 static STATE: OnceLock<Mutex<CoreState>> = OnceLock::new();
@@ -51,6 +52,7 @@ fn state() -> &'static Mutex<CoreState> {
             temp_dir: PathBuf::new(),
             config_file: PathBuf::new(),
             core_bin: PathBuf::new(),
+            proxy_enabled: false,
         })
     })
 }
@@ -617,6 +619,11 @@ fn start_core_locked(st: &mut CoreState) -> Result<(), String> {
             }
         } else {
             s.status.last_error = "内核连续退出，已停止".into();
+            // 放弃重启：内核已不再服务，还原系统代理，避免残留死代理导致网页访问异常
+            if s.proxy_enabled {
+                crate::proxy::set_system_proxy_inner(false, 0);
+                s.proxy_enabled = false;
+            }
         }
     });
     Ok(())
@@ -722,6 +729,7 @@ pub fn connect(subscription: String) -> Result<serde_json::Value, String> {
     start_core_locked(&mut st)?;
     // 开启系统代理
     crate::proxy::set_system_proxy_inner(true, mixed);
+    st.proxy_enabled = true;
     drop(st);
     Ok(json!({ "ok": true, "nodes": count, "mixedPort": mixed }))
 }
@@ -731,7 +739,11 @@ pub fn disconnect() -> Result<serde_json::Value, String> {
     let mut st = state().lock().unwrap();
     // 真正杀掉内核进程（taskkill /F /PID），监控线程 wait 返回后见 intentional_stop 即退出
     stop_kernel(&mut st);
-    crate::proxy::set_system_proxy_inner(false, 0);
+    // 只还原本程序开启的系统代理（避免误关其他代理工具的设置）
+    if st.proxy_enabled {
+        crate::proxy::set_system_proxy_inner(false, 0);
+        st.proxy_enabled = false;
+    }
     Ok(json!({ "ok": true }))
 }
 
@@ -781,6 +793,7 @@ pub fn save_rules(content: String, restart: bool) -> Result<serde_json::Value, S
         let mut st = state().lock().unwrap();
         start_core_locked(&mut st)?;
         crate::proxy::set_system_proxy_inner(true, st.mixed_port);
+        st.proxy_enabled = true;
     }
     Ok(json!({ "ok": true, "restarted": restart && was_running }))
 }
