@@ -413,7 +413,9 @@ DOMAIN-SUFFIX,xiaomi.com,DIRECT
 DOMAIN-SUFFIX,huawei.com,DIRECT
 DOMAIN-SUFFIX,tencent.com,DIRECT
 DOMAIN-SUFFIX,aliyun.com,DIRECT
-DOMAIN-SUFFIX,aliyuncs.com,DIRECT";
+DOMAIN-SUFFIX,aliyuncs.com,DIRECT
+# 国际 CDN：国内可直连，走 gfw 代理反而 4-12s（实测），必须直连
+DOMAIN-SUFFIX,jsdelivr.net,DIRECT";
 
 // 内置 gfw 名单（被墙域名，走代理）；允许用外部 config/routes_box/gfwlist.txt 覆盖
 const BUILTIN_GFWLIST: &str = include_str!("../routes/gfwlist.txt");
@@ -497,7 +499,7 @@ fn build_config(nodes: &[Node], mixed_port: u16, ctrl_port: u16) -> Option<Strin
         .collect::<Vec<_>>()
         .join("\n");
     let cfg = format!(
-        "mixed-port: {}\nallow-lan: false\nmode: rule\nlog-level: warning\nlog-file: history.log\nexternal-controller: 127.0.0.1:{}\nproxies:\n{}\nproxy-groups:\n  - name: auto\n    type: url-test\n    url: http://www.gstatic.com/generate_204\n    interval: 180\n    tolerance: 300\n    proxies:\n{}\nrules:\n{}",
+        "mixed-port: {}\nallow-lan: false\nmode: rule\nlog-level: warning\nlog-file: history.log\nexternal-controller: 127.0.0.1:{}\nproxies:\n{}\nproxy-groups:\n  - name: auto\n    type: url-test\n    url: http://www.gstatic.com/generate_204\n    interval: 60\n    tolerance: 300\n    proxies:\n{}\nrules:\n{}",
         mixed_port, ctrl_port,
         outbounds.join("\n"),
         names.iter().map(|n| format!("      - {}", n)).collect::<Vec<_>>().join("\n"),
