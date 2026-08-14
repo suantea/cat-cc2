@@ -26,9 +26,16 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "public.app-category.utilities",
     "icon": ["icons/icon.ico", "icons/icon.icns"],
     "macOS": {
-      "minimumSystemVersion": "10.15"
+      "minimumSystemVersion": "10.15",
+      "dmg": {
+        "windowSize": {
+          "width": 480,
+          "height": 360
+        }
+      }
     }
   }
 }
