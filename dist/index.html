@@ -78,6 +78,12 @@
       <div class="row">
         <button class="btn ghost" id="parseBtn">解析预览</button>
       </div>
+      <label for="optIps">CF 优选 IP（可选；多个用换行或逗号分隔，最多 5 个；仅对 ws+tls 的 vless/vmess/trojan 节点生效，留空则直接用订阅原地址）</label>
+      <textarea id="optIps" placeholder="104.16.0.0
+104.17.0.0"></textarea>
+      <div class="row">
+        <button class="btn ghost" id="optSaveBtn">保存优选 IP</button>
+      </div>
       <div class="hint" id="hint">连接后自动选择最快节点（url-test），内核异常自动重启最多 3 次。</div>
       <div class="err" id="err"></div>
     </div>
@@ -229,6 +235,15 @@
     $('rulesSave').textContent = '保存并生效';
   };
   loadRules();
+
+  // 加载/保存 CF 优选 IP
+  invoke('load_opt_ips').then(v => { if (v) $('optIps').value = (Array.isArray(v) ? v.join('\n') : v); }).catch(() => {});
+  $('optSaveBtn').onclick = async () => {
+    try {
+      await invoke('save_opt_ips', { content: $('optIps').value.trim() });
+      $('hint').textContent = '优选 IP 已保存（下次连接或自动刷新时生效）';
+    } catch (e) { showErr(String(e)); }
+  };
 
   poll();
   setInterval(poll, 3000);
