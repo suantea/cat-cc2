@@ -318,7 +318,10 @@ mod tests {
             parse_reg_value_line("    ProxyEnable    REG_DWORD    0x1"),
             Some("0x1".to_string())
         );
-        assert_eq!(parse_reg_value_line("    HKEY_CURRENT_USER\\Software"), None);
+        assert_eq!(
+            parse_reg_value_line("    HKEY_CURRENT_USER\\Software"),
+            None
+        );
         assert_eq!(parse_reg_value_line(""), None);
     }
 }
