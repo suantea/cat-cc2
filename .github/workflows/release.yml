@@ -33,20 +33,19 @@ jobs:
           name: cat-cc2-windows-x64
           path: src-tauri/target/release/cat-cc2.exe
 
-  # macOS：arm64（Apple Silicon）与 x64（Intel）各一个 runner 构建 .app + .dmg
+  # macOS：arm64 与 x64 均在 macos-14（arm64 runner）上构建，x64 走交叉编译
+  # （GitHub 公共 macos-13 Intel runner 已退役/排队枯竭，2026-08-14 实测 queued 30min+）
   # 无 Apple Developer 证书 → 产物未签名（ad-hoc），首次打开需右键→打开或
   # xattr -dr com.apple.quarantine 解除隔离（见使用手册 macOS 章节）
   macos:
     name: Build macOS (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-14
     strategy:
       matrix:
         include:
           - arch: arm64
-            runner: macos-14
             target: aarch64-apple-darwin
           - arch: x64
-            runner: macos-13
             target: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v4
