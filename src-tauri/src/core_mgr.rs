@@ -78,7 +78,8 @@ struct CoreState {
     config_file: PathBuf,
     core_bin: PathBuf,
     proxy_enabled: bool, // 系统代理是否由本程序开启（断开/退出时只清理自己的）
-    sub_source: String,  // connect 传入的原始订阅串（自动刷新用）
+    sub_sources: Vec<String>, // connect 传入的订阅源列表（多 Worker 故障转移，自动刷新轮转用）
+    sub_idx: usize,           // 当前生效的订阅源索引（刷新失败时轮转下一个）
     refresh_stop: Option<Arc<AtomicBool>>, // 自动刷新线程停止信号
 }
 
@@ -99,7 +100,8 @@ fn state() -> &'static Mutex<CoreState> {
             config_file: PathBuf::new(),
             core_bin: PathBuf::new(),
             proxy_enabled: false,
-            sub_source: String::new(),
+            sub_sources: Vec::new(),
+            sub_idx: 0,
             refresh_stop: None,
         })
     })
@@ -513,6 +515,77 @@ fn opt_ips_file() -> PathBuf {
     app_base().join("opt_ip.txt")
 }
 
+// 内置候选池：CF Anycast 常用优选 IP（首段 104.16.0.0/13 及 172.64/141.101/162.158 等）
+// 可用 config/opt_ip_pool.txt 覆盖追加（每行一个 IP 或逗号分隔）
+const BUILTIN_OPT_IP_POOL: &[&str] = &[
+    "1.1.1.1", "1.0.0.1", "104.16.0.1", "104.16.100.1", "104.16.200.1", "104.17.0.1",
+    "104.18.0.1", "104.19.0.1", "104.20.0.1", "104.21.0.1", "104.22.0.1", "104.23.0.1",
+    "104.24.0.1", "104.25.0.1", "104.26.0.1", "104.27.0.1", "104.28.0.1", "104.29.0.1",
+    "104.30.0.1", "104.31.0.1", "172.64.0.1", "172.65.0.1", "172.66.0.1", "172.67.0.1",
+    "141.101.0.1", "162.158.0.1", "190.93.0.1", "198.41.0.1",
+];
+
+fn opt_ip_pool_file() -> PathBuf {
+    app_base().join("opt_ip_pool.txt")
+}
+
+// 组装候选池：内置 + 外部覆盖（config/opt_ip_pool.txt）合并去重
+fn opt_ip_pool() -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut add = |ips: &[String]| {
+        for ip in ips {
+            if seen.insert(ip.clone()) {
+                out.push(ip.clone());
+            }
+        }
+    };
+    let external = std::fs::read_to_string(opt_ip_pool_file())
+        .map(|c| parse_opt_ips(&c))
+        .unwrap_or_default();
+    add(&external);
+    add(&BUILTIN_OPT_IP_POOL.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    out
+}
+
+// 并发 TCP 探测候选池（443 端口，1.5s 超时），返回延迟升序的前 5 个 (IP, 延迟ms)
+fn probe_opt_ips() -> Vec<(String, u128)> {
+    let pool = opt_ip_pool();
+    let (tx, rx) = std::sync::mpsc::channel::<(String, u128)>();
+    let mut handles = Vec::new();
+    for ip in pool {
+        let tx = tx.clone();
+        handles.push(std::thread::spawn(move || {
+            let Ok(addr) = format!("{}:443", ip).parse::<std::net::SocketAddr>() else {
+                return;
+            };
+            let start = std::time::Instant::now();
+            if std::net::TcpStream::connect_timeout(
+                &addr,
+                Duration::from_millis(1500),
+            )
+            .is_ok()
+            {
+                let _ = tx.send((ip, start.elapsed().as_millis()));
+            }
+        }));
+    }
+    drop(tx);
+    let mut results: Vec<(String, u128)> = rx.iter().collect();
+    for h in handles {
+        let _ = h.join();
+    }
+    results.sort_by_key(|(_, ms)| *ms);
+    results.truncate(5);
+    results
+}
+
+// 写优选 IP 列表到 opt_ip.txt（内部用）
+fn write_opt_ips(ips: &[String]) -> Result<(), String> {
+    let _ = std::fs::create_dir_all(app_base());
+    std::fs::write(opt_ips_file(), ips.join("\n")).map_err(|e| format!("写 opt_ip.txt 失败: {}", e))
+}
+
 // 纯函数：逐行 trim、跳过空行和 # 注释、支持逗号分隔多 IP、
 // 仅保留合法 IP、去重、最多保留 5 个
 fn parse_opt_ips(content: &str) -> Vec<String> {
@@ -554,6 +627,21 @@ pub fn save_opt_ips(content: String) -> Result<serde_json::Value, String> {
     let _ = std::fs::create_dir_all(app_base());
     std::fs::write(opt_ips_file(), content).map_err(|e| format!("写 opt_ip.txt 失败: {}", e))?;
     Ok(json!({ "ok": true }))
+}
+
+// 一键自动测速：并发探测候选池 → 自动写入 opt_ip.txt → 返回 (IP, 延迟ms) 列表
+#[tauri::command]
+pub fn auto_probe_opt_ips() -> Result<serde_json::Value, String> {
+    let results = probe_opt_ips();
+    if results.is_empty() {
+        return Err("没有探测到可用优选 IP，请检查网络或稍后重试".into());
+    }
+    let ips: Vec<String> = results.iter().map(|(ip, _)| ip.clone()).collect();
+    write_opt_ips(&ips)?;
+    Ok(json!({
+        "ips": ips,
+        "latencies": results.iter().map(|(_, ms)| ms).collect::<Vec<_>>()
+    }))
 }
 
 // 为可优选节点（ws + tls 的 vless/vmess/trojan）按每个 IP 克隆一份变体；
@@ -627,7 +715,7 @@ fn build_config(nodes: &[Node], mixed_port: u16, ctrl_port: u16) -> Option<Strin
         .collect::<Vec<_>>()
         .join("\n");
     let cfg = format!(
-        "mixed-port: {}\nallow-lan: false\nmode: rule\nlog-level: warning\nlog-file: history.log\nexternal-controller: 127.0.0.1:{}\ndns:\n  enable: true\n  enhanced-mode: redir-host\n  nameserver:\n    - 223.5.5.5\n    - 119.29.29.29\n  fallback:\n    - 8.8.8.8\n    - 1.1.1.1\n  fallback-filter:\n    geoip: false\nproxies:\n{}\nproxy-groups:\n  - name: auto\n    type: url-test\n    url: http://www.gstatic.com/generate_204\n    interval: 60\n    tolerance: 300\n    proxies:\n{}\nrules:\n{}",
+        "mixed-port: {}\nallow-lan: false\nmode: rule\nlog-level: warning\nlog-file: history.log\nkeep-alive-interval: 15\nkeep-alive-idle: 15\nexternal-controller: 127.0.0.1:{}\ndns:\n  enable: true\n  enhanced-mode: redir-host\n  nameserver:\n    - 223.5.5.5\n    - 119.29.29.29\n  fallback:\n    - 8.8.8.8\n    - 1.1.1.1\n  fallback-filter:\n    geoip: false\nproxies:\n{}\nproxy-groups:\n  - name: auto\n    type: url-test\n    url: http://www.gstatic.com/generate_204\n    interval: 60\n    tolerance: 300\n    proxies:\n{}\nrules:\n{}",
         mixed_port, ctrl_port,
         outbounds.join("\n"),
         names.iter().map(|n| format!("      - {}", n)).collect::<Vec<_>>().join("\n"),
@@ -845,20 +933,64 @@ fn query_node_status() {
 }
 
 // ---------- 命令 ----------
+// 拆分订阅源：内容含 URL 时按换行/逗号拆分为多个源（多 Worker 故障转移）；
+// 否则整体作为节点内容原样返回
+fn split_sub_sources(subscription: &str) -> Vec<String> {
+    if !subscription.contains("http://") && !subscription.contains("https://") {
+        return vec![subscription.to_string()];
+    }
+    subscription
+        .split(|c| c == '\n' || c == ',')
+        .map(|s| s.trim())
+        .filter(|s| {
+            !s.is_empty() && (s.starts_with("http://") || s.starts_with("https://"))
+        })
+        .map(|s| s.to_string())
+        .collect()
+}
+
 #[tauri::command]
 pub fn connect(subscription: String) -> Result<serde_json::Value, String> {
-    // 拉取订阅
-    let text = if subscription.starts_with("http://") || subscription.starts_with("https://") {
-        crate::subscribe::fetch_url_pub(&subscription)?
-    } else {
-        subscription.clone()
-    };
-    let nodes = apply_opt_ips(parse_subscription(&text), &load_opt_ips());
+    // 多订阅源：逐个尝试拉取，第一个成功的作为节点文本（首个失败自动切下一个 Worker）
+    let sources = split_sub_sources(&subscription);
+    let mut text = String::new();
+    let mut active_idx = 0usize;
+    for (i, src) in sources.iter().enumerate() {
+        if src.starts_with("http://") || src.starts_with("https://") {
+            match crate::subscribe::fetch_url_pub(src) {
+                Ok(t) => {
+                    text = t;
+                    active_idx = i;
+                    break;
+                }
+                Err(_) => continue,
+            }
+        } else {
+            text = src.clone();
+            active_idx = i;
+            break;
+        }
+    }
+    if text.is_empty() {
+        return Err("所有订阅源拉取失败，请检查链接".into());
+    }
+    // 自动优选 IP：opt_ip.txt 为空时自动并发探测候选池并写入，避免手动配置
+    let mut ips = load_opt_ips();
+    if ips.is_empty() {
+        let probed = probe_opt_ips();
+        if !probed.is_empty() {
+            let probed_ips: Vec<String> = probed.into_iter().map(|(ip, _)| ip).collect();
+            let _ = write_opt_ips(&probed_ips);
+            ips = probed_ips;
+        }
+    }
+    let nodes = apply_opt_ips(parse_subscription(&text), &ips);
     if nodes.is_empty() {
         return Err("解析不到任何节点，请检查订阅链接".into());
     }
     let mut st = state().lock().unwrap();
-    st.sub_source = subscription.clone();
+    st.sub_sources = sources;
+    st.sub_idx = active_idx;
     // 停掉旧内核（若有），避免旧进程泄漏继续占用端口
     if let Some(pid) = stop_kernel(&mut st) {
         wait_pid_exit(pid, Duration::from_secs(3));
@@ -928,13 +1060,15 @@ fn all_nodes_dead() -> bool {
     all.values().all(|x| x.as_u64().unwrap_or(1) == 0)
 }
 
-// 订阅自动刷新：重拉订阅并按当前优选 IP 重建节点后重启内核（仿 save_rules 重启路径）
+// 订阅自动刷新：按轮转顺序重拉订阅（多 Worker 故障转移），成功即按当前优选 IP
+// 重建节点并重启内核（仿 save_rules 重启路径）
 fn do_refresh() {
     // 持锁快照，避免拉取期间长期占用锁
-    let (sub_source, _mixed_port, _ctrl_port, _temp_dir, _config_file, _core_bin) = {
+    let (sub_sources, sub_idx, _mixed_port, _ctrl_port, _temp_dir, _config_file, _core_bin) = {
         let s = state().lock().unwrap();
         (
-            s.sub_source.clone(),
+            s.sub_sources.clone(),
+            s.sub_idx,
             s.mixed_port,
             s.ctrl_port,
             s.temp_dir.clone(),
@@ -943,18 +1077,30 @@ fn do_refresh() {
         )
     };
     // 自动刷新只对 URL 订阅有意义
-    if sub_source.is_empty()
-        || !(sub_source.starts_with("http://") || sub_source.starts_with("https://"))
-    {
+    if sub_sources.is_empty() {
         return;
     }
-    let text = match crate::subscribe::fetch_url_pub(&sub_source) {
-        Ok(t) => t,
-        Err(_) => {
-            state().lock().unwrap().status.last_error = "订阅自动刷新失败，沿用旧节点".into();
-            return;
+    // 从当前源开始轮转尝试；全部失败则沿用旧节点
+    let mut text = String::new();
+    let mut used_idx = sub_idx;
+    for step in 0..sub_sources.len() {
+        let i = (sub_idx + step) % sub_sources.len();
+        let src = &sub_sources[i];
+        if !(src.starts_with("http://") || src.starts_with("https://")) {
+            continue;
         }
-    };
+        if let Ok(t) = crate::subscribe::fetch_url_pub(src) {
+            if !parse_subscription(&t).is_empty() {
+                text = t;
+                used_idx = i;
+                break;
+            }
+        }
+    }
+    if text.is_empty() {
+        state().lock().unwrap().status.last_error = "订阅自动刷新失败（全部源不可用），沿用旧节点".into();
+        return;
+    }
     let mut nodes = parse_subscription(&text);
     if nodes.is_empty() {
         state().lock().unwrap().status.last_error = "订阅刷新：解析不到节点，沿用旧配置".into();
@@ -966,6 +1112,7 @@ fn do_refresh() {
     if !st.status.running || st.intentional_stop {
         return;
     }
+    st.sub_idx = used_idx; // 记录当前生效源，下次从它起轮转
     if let Some(pid) = stop_kernel(&mut st) {
         wait_pid_exit(pid, Duration::from_secs(3));
     }
@@ -1312,5 +1459,53 @@ mod tests {
         // 空内容 / 纯注释
         assert!(parse_opt_ips("").is_empty());
         assert!(parse_opt_ips("# 只有注释\n\n").is_empty());
+    }
+
+    #[test]
+    fn opt_ip_pool_includes_builtin_and_dedup() {
+        // 内置池非空、去重无重复
+        let pool = opt_ip_pool();
+        assert!(!pool.is_empty(), "内置候选池不应为空");
+        assert!(pool.iter().all(|ip| ip.parse::<std::net::IpAddr>().is_ok()));
+        let unique: std::collections::HashSet<&String> = pool.iter().collect();
+        assert_eq!(unique.len(), pool.len(), "候选池不应有重复 IP");
+    }
+
+    #[test]
+    fn split_sub_sources_multi_url_vs_plain() {
+        // 多 URL(换行/逗号分隔)拆分;纯节点内容原样返回
+        let multi = "https://a.example.com/sub1\nhttps://b.example.com/sub2";
+        let s = split_sub_sources(multi);
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0], "https://a.example.com/sub1");
+        assert_eq!(s[1], "https://b.example.com/sub2");
+        let comma = "https://a.example.com/sub1,https://b.example.com/sub2";
+        assert_eq!(split_sub_sources(comma).len(), 2);
+        let plain = "vmess://abc\nvmess://def"; // 非 URL 内容 → 原样
+        let p = split_sub_sources(plain);
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0], plain);
+        // 空输入 → 空串元素(connect 会报"所有订阅源拉取失败")
+        assert_eq!(split_sub_sources(""), vec!["".to_string()]);
+    }
+
+    #[test]
+    fn build_config_has_keepalive_and_dns() {
+        // 生成配置应含 WS 保活(keep-alive)与 DNS 防污染段
+        let cfg = build_config(&[ss_node()], 7890, 9090).expect("应生成配置");
+        assert!(cfg.contains("keep-alive-interval: 15"));
+        assert!(cfg.contains("keep-alive-idle: 15"));
+        assert!(cfg.contains("dns:"));
+        assert!(cfg.contains("enhanced-mode: redir-host"));
+        assert!(cfg.contains("interval: 60"));
+    }
+
+    #[test]
+    fn connect_all_sources_fail_returns_err() {
+        // 无 URL 且为空串 → 所有源拉取失败报错(不 panic)
+        let err = connect(String::new());
+        assert!(err.is_err());
+        let msg = err.unwrap_err();
+        assert!(msg.contains("所有订阅源拉取失败") || msg.contains("解析不到任何节点"));
     }
 }

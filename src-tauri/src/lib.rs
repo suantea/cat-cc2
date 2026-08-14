@@ -62,6 +62,7 @@ pub fn run() {
             core_mgr::save_rules,
             core_mgr::load_opt_ips,
             core_mgr::save_opt_ips,
+            core_mgr::auto_probe_opt_ips,
             proxy::set_system_proxy,
         ])
         .run(tauri::generate_context!())
