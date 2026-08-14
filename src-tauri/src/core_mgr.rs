@@ -3,14 +3,49 @@ use crate::subscribe::{parse_subscription, Node};
 use serde::Serialize;
 use serde_json::json;
 use std::io::Write;
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const MAX_RETRIES: u32 = 3;
+
+// 内核二进制名：Windows 为 mihomo-core.exe；macOS/Linux 为 mihomo-core
+#[cfg(target_os = "windows")]
+const CORE_NAME: &str = "mihomo-core.exe";
+#[cfg(not(target_os = "windows"))]
+const CORE_NAME: &str = "mihomo-core";
+
+// Windows 下隐藏子进程控制台窗口；其他平台原样返回
+#[cfg(target_os = "windows")]
+fn hide_window(cmd: &mut Command) -> &mut Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW)
+}
+#[cfg(not(target_os = "windows"))]
+fn hide_window(cmd: &mut Command) -> &mut Command {
+    cmd
+}
+
+// 强杀进程：Windows taskkill /F；macOS/Linux kill（SIGTERM，mihomo 正常处理退出）
+#[cfg(target_os = "windows")]
+fn kill_process(pid: u32) {
+    let _ = hide_window(Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+}
+#[cfg(not(target_os = "windows"))]
+fn kill_process(pid: u32) {
+    let _ = Command::new("kill")
+        .args([&pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+}
 
 #[derive(Serialize, Default, Clone)]
 pub struct CoreStatus {
@@ -59,25 +94,25 @@ fn state() -> &'static Mutex<CoreState> {
     })
 }
 
-// 查找 mihomo-core.exe：exe 同目录 → src-tauri/ → 项目根（编译期路径，开发模式稳定）
+// 查找内核：exe 同目录 → src-tauri/ → 项目根（编译期路径，开发模式稳定）
 fn find_core() -> Option<PathBuf> {
     let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let candidates = [
-        exe_dir.join("mihomo-core.exe"),
-        exe_dir.join("..").join("..").join("mihomo-core.exe"), // src-tauri/
+        exe_dir.join(CORE_NAME),
+        exe_dir.join("..").join("..").join(CORE_NAME), // src-tauri/
         exe_dir
             .join("..")
             .join("..")
             .join("..")
-            .join("mihomo-core.exe"), // 项目根（main exe）
+            .join(CORE_NAME), // 项目根（main exe）
         exe_dir
             .join("..")
             .join("..")
             .join("..")
             .join("..")
-            .join("mihomo-core.exe"), // 项目根（测试 exe）
-        manifest.join("..").join("mihomo-core.exe"),           // 编译期：src-tauri/../ = 项目根
+            .join(CORE_NAME), // 项目根（测试 exe）
+        manifest.join("..").join(CORE_NAME),           // 编译期：src-tauri/../ = 项目根
     ];
     candidates.into_iter().find(|p| p.exists())
 }
@@ -86,8 +121,8 @@ fn app_base() -> PathBuf {
     // 可写数据目录：exe 同目录（便携）；开发时放项目 config/
     if let Ok(exe) = std::env::current_exe() {
         let dir = exe.parent().unwrap_or(Path::new(".")).to_path_buf();
-        // 开发模式（target/debug/ 下无 mihomo-core）→ 用项目根
-        if !dir.join("mihomo-core.exe").exists() {
+        // 开发模式（target/debug/ 下无内核二进制）→ 用项目根
+        if !dir.join(CORE_NAME).exists() {
             if let Some(root) = dir
                 .parent()
                 .and_then(|d| d.parent())
@@ -112,17 +147,29 @@ fn pick_port(pref: u16) -> u16 {
     (20000..65535u16).find(|&p| port_free(p)).unwrap_or(pref)
 }
 
-// 检查进程是否存活（tasklist 精确匹配 PID，避免子串误判）
+// 检查进程是否存活（Windows tasklist 精确匹配 PID；Unix kill -0 探活）
 fn pid_alive(pid: u32) -> bool {
-    let out = Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {}", pid), "/NH"])
-        .creation_flags(CREATE_NO_WINDOW)
+    #[cfg(target_os = "windows")]
+    {
+        let out = hide_window(
+            Command::new("tasklist").args(["/FI", &format!("PID eq {}", pid), "/NH"]),
+        )
         .output();
-    match out {
-        Ok(o) => String::from_utf8_lossy(&o.stdout)
-            .split_whitespace()
-            .any(|tok| tok == pid.to_string()),
-        Err(_) => false,
+        match out {
+            Ok(o) => String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .any(|tok| tok == pid.to_string()),
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // 信号 0 不发送任何信号，仅探测进程是否存在（同用户权限下可用）
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 }
 
@@ -137,7 +184,7 @@ fn wait_pid_exit(pid: u32, max_wait: Duration) {
     }
 }
 
-// 停止当前内核：标记主动停止 + taskkill /F（返回被杀 PID）。
+// 停止当前内核：标记主动停止 + 强杀进程（返回被杀 PID）。
 // 监控线程 wait 返回后见 intentional_stop 即退出；generation 计数防旧线程误重启
 fn stop_kernel(st: &mut CoreState) -> Option<u32> {
     st.intentional_stop = true;
@@ -146,13 +193,7 @@ fn stop_kernel(st: &mut CoreState) -> Option<u32> {
     st.status.latency = 0;
     let pid = st.core_pid.take();
     if let Some(p) = pid {
-        let _ = Command::new("taskkill")
-            .args(["/F", "/PID", &p.to_string()])
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .output();
+        kill_process(p);
     }
     pid
 }
@@ -511,19 +552,19 @@ fn build_config(nodes: &[Node], mixed_port: u16, ctrl_port: u16) -> Option<Strin
 const VALIDATE_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn validate_config(core: &Path, temp: &Path, config: &Path) -> bool {
-    let Ok(mut child) = Command::new(core)
-        .args([
+    let Ok(mut child) = hide_window(
+        Command::new(core).args([
             "-t",
             "-d",
             temp.to_str().unwrap_or(""),
             "-f",
             config.to_str().unwrap_or(""),
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+        ]),
+    )
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
     else {
         return false;
     };
@@ -546,19 +587,19 @@ fn validate_config(core: &Path, temp: &Path, config: &Path) -> bool {
 }
 
 fn spawn_core(st: &CoreState) -> Result<Child, String> {
-    Command::new(&st.core_bin)
-        .args([
+    hide_window(
+        Command::new(&st.core_bin).args([
             "-d",
             st.temp_dir.to_str().unwrap_or(""),
             "-f",
             st.config_file.to_str().unwrap_or(""),
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("启动内核失败: {}", e))
+        ]),
+    )
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    .map_err(|e| format!("启动内核失败: {}", e))
 }
 
 fn start_core_locked(st: &mut CoreState) -> Result<(), String> {
@@ -742,7 +783,8 @@ pub fn connect(subscription: String) -> Result<serde_json::Value, String> {
     st.ctrl_port = pick_port(9090);
     st.temp_dir = app_base().join("temp");
     st.config_file = st.temp_dir.join("config.yaml");
-    st.core_bin = find_core().ok_or("未找到 mihomo-core.exe，请将其放在程序目录".to_string())?;
+    st.core_bin = find_core()
+        .ok_or(format!("未找到 {}，请将其放在程序目录", CORE_NAME))?;
     let count = st.nodes.len();
     let mixed = st.mixed_port;
     start_core_locked(&mut st)?;
