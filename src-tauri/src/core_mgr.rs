@@ -389,6 +389,64 @@ fn outbound_yaml(n: &Node) -> Option<String> {
             }
             push(&mut parts, "    udp: true".into());
         }
+        "tuic" => {
+            push(&mut parts, format!("    server: {}", n.server));
+            push(&mut parts, format!("    port: {}", n.port));
+            push(
+                &mut parts,
+                format!(
+                    "    uuid: {}",
+                    yaml_str(n.uuid.as_deref().unwrap_or(""))
+                ),
+            );
+            if let Some(p) = n.password.as_deref() {
+                if !p.is_empty() {
+                    push(&mut parts, format!("    password: {}", yaml_str(p)));
+                }
+            }
+            if let Some(cc) = n.congestion_controller.as_deref() {
+                if !cc.is_empty() {
+                    push(&mut parts, format!("    congestion-controller: {}", yaml_str(cc)));
+                }
+            }
+            if let Some(um) = n.udp_relay_mode.as_deref() {
+                if !um.is_empty() {
+                    push(&mut parts, format!("    udp-relay-mode: {}", yaml_str(um)));
+                }
+            }
+            if n.reduce_rtt == Some(true) {
+                push(&mut parts, "    reduce-rtt: true".into());
+            }
+            if let Some(alpn) = n.alpn.as_deref() {
+                if !alpn.is_empty() {
+                    // alpn 逗号分隔 → mihomo 数组格式
+                    let list: Vec<&str> = alpn.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+                    if !list.is_empty() {
+                        push(
+                            &mut parts,
+                            format!(
+                                "    alpn:\n{}",
+                                list.iter()
+                                    .map(|a| format!("      - {}", yaml_str(a)))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            ),
+                        );
+                    }
+                }
+            }
+            push(
+                &mut parts,
+                format!(
+                    "    sni: {}",
+                    yaml_str(n.sni.as_deref().unwrap_or(&n.server))
+                ),
+            );
+            if n.insecure == Some(true) {
+                push(&mut parts, "    skip-cert-verify: true".into());
+            }
+            push(&mut parts, "    udp: true".into());
+        }
         "http" => {
             push(&mut parts, format!("    server: {}", n.server));
             push(&mut parts, format!("    port: {}", n.port));
