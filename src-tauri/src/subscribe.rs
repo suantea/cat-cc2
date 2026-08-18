@@ -54,6 +54,14 @@ pub struct Node {
     pub obfs_password: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub insecure: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub congestion_controller: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub udp_relay_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alpn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reduce_rtt: Option<bool>,
 }
 
 fn decode_b64(s: &str) -> Option<String> {
@@ -313,6 +321,33 @@ fn parse_share_link(link: &str) -> Option<Node> {
                 obfs: q("obfs"),
                 obfs_password: q("obfs-password"),
                 insecure: q("insecure").map(|v| v == "1" || v == "true"),
+                ..Default::default()
+            });
+        }
+    }
+    if link.starts_with("tuic://") {
+        if let Ok(u) = Url::parse(link) {
+            let host = u.host_str().unwrap_or("").to_string();
+            let q = |k: &str| {
+                u.query_pairs()
+                    .find(|(x, _)| x == k)
+                    .map(|(_, v)| v.into_owned())
+            };
+            // userinfo 由 url crate 解析：username = uuid，password = 密码
+            let uuid = (!u.username().is_empty()).then(|| u.username().to_string());
+            let password = u.password().map(String::from);
+            return Some(Node {
+                r#type: "tuic".into(),
+                name: name_from_hash(&u),
+                server: host.clone(),
+                port: u.port().unwrap_or(443),
+                uuid,
+                password,
+                sni: q("sni").or_else(|| Some(host.clone())),
+                congestion_controller: q("congestion_control").or_else(|| Some("bbr".into())),
+                udp_relay_mode: q("udp_relay_mode").or_else(|| Some("native".into())),
+                alpn: q("alpn"),
+                reduce_rtt: q("reduce_rtt").map(|v| v == "1" || v == "true"),
                 ..Default::default()
             });
         }
@@ -846,6 +881,31 @@ mod tests {
         assert_eq!(m.port, 8443);
         assert_eq!(m.sni.as_deref(), Some("9.9.9.9"));
         assert_eq!(m.insecure, None);
+    }
+
+    #[test]
+    fn parse_tuic_links() {
+        // 完整版：uuid:password@host + sni/congestion/alpn/reduce_rtt 参数
+        let tuic = "tuic://uuid-1234:tuic-pass@1.2.3.4:443?sni=example.com&congestion_control=cubic&udp_relay_mode=native&alpn=h3&reduce_rtt=1#TUIC节点";
+        let n = parse_share_link(tuic).expect("tuic:// 应解析成功");
+        assert_eq!(n.r#type, "tuic");
+        assert_eq!(n.server, "1.2.3.4");
+        assert_eq!(n.port, 443);
+        assert_eq!(n.uuid.as_deref(), Some("uuid-1234"));
+        assert_eq!(n.password.as_deref(), Some("tuic-pass"));
+        assert_eq!(n.sni.as_deref(), Some("example.com"));
+        assert_eq!(n.congestion_controller.as_deref(), Some("cubic"));
+        assert_eq!(n.udp_relay_mode.as_deref(), Some("native"));
+        assert_eq!(n.alpn.as_deref(), Some("h3"));
+        assert_eq!(n.reduce_rtt, Some(true));
+        assert_eq!(n.name, "TUIC节点");
+
+        // 缺省：无 sni → host；无 congestion_control → bbr；无 reduce_rtt → None
+        let m = parse_share_link("tuic://u:p@9.9.9.9:8443#简版").expect("tuic:// 简版应解析成功");
+        assert_eq!(m.sni.as_deref(), Some("9.9.9.9"));
+        assert_eq!(m.congestion_controller.as_deref(), Some("bbr"));
+        assert_eq!(m.udp_relay_mode.as_deref(), Some("native"));
+        assert_eq!(m.reduce_rtt, None);
     }
 
     #[test]
