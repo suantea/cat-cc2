@@ -423,6 +423,82 @@ fn rules_file() -> PathBuf {
     app_base().join("rules.txt")
 }
 
+// ---------- CF 优选 IP ----------
+// 优选 IP 文件路径：config/opt_ip.txt
+fn opt_ips_file() -> PathBuf {
+    app_base().join("opt_ip.txt")
+}
+
+// 纯函数：逐行 trim、跳过空行和 # 注释、支持逗号分隔多 IP、
+// 仅保留合法 IP、去重、最多保留 5 个
+fn parse_opt_ips(content: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let l = line.trim();
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        for part in l.split(',') {
+            let p = part.trim();
+            if p.is_empty() {
+                continue;
+            }
+            if p.parse::<std::net::IpAddr>().is_ok() && seen.insert(p.to_string()) {
+                out.push(p.to_string());
+                if out.len() >= 5 {
+                    return out;
+                }
+            }
+        }
+    }
+    out
+}
+
+// 读取优选 IP 列表（不存在或读取失败时返回空）
+#[tauri::command]
+pub fn load_opt_ips() -> Vec<String> {
+    match std::fs::read_to_string(opt_ips_file()) {
+        Ok(c) => parse_opt_ips(&c),
+        Err(_) => Vec::new(),
+    }
+}
+
+// 保存优选 IP 列表
+#[tauri::command]
+pub fn save_opt_ips(content: String) -> Result<serde_json::Value, String> {
+    let _ = std::fs::create_dir_all(app_base());
+    std::fs::write(opt_ips_file(), content).map_err(|e| format!("写 opt_ip.txt 失败: {}", e))?;
+    Ok(json!({ "ok": true }))
+}
+
+// 为可优选节点（ws + tls 的 vless/vmess/trojan）按每个 IP 克隆一份变体；
+// 其余节点（ss/socks/http、非 ws、ws 无 tls）原样保留
+fn apply_opt_ips(nodes: Vec<Node>, ips: &[String]) -> Vec<Node> {
+    if ips.is_empty() {
+        return nodes;
+    }
+    let mut out = Vec::new();
+    for n in nodes {
+        let is_ws = n.network.as_deref() == Some("ws");
+        let has_tls = n.security.as_deref() == Some("tls") || n.tls.as_deref() == Some("tls");
+        let optable = is_ws
+            && has_tls
+            && (n.r#type == "vless" || n.r#type == "vmess" || n.r#type == "trojan");
+        if optable {
+            for ip in ips {
+                let mut m = n.clone();
+                m.server = ip.clone();
+                m.name = format!("{}@{}", n.name, ip);
+                out.push(m);
+            }
+        } else {
+            out.push(n);
+        }
+    }
+    out
+}
+
 // 读取 gfw 名单：优先外部 config/routes_box/gfwlist.txt；外部不存在或为空时用内置
 fn load_gfwlist() -> Vec<String> {
     let ext = app_base().join("routes_box").join("gfwlist.txt");
@@ -728,7 +804,7 @@ pub fn connect(subscription: String) -> Result<serde_json::Value, String> {
     } else {
         subscription
     };
-    let nodes = parse_subscription(&text);
+    let nodes = apply_opt_ips(parse_subscription(&text), &load_opt_ips());
     if nodes.is_empty() {
         return Err("解析不到任何节点，请检查订阅链接".into());
     }

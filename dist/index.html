@@ -36,6 +36,33 @@
   }
   textarea:focus { border-color: var(--green); }
   .row { display: flex; gap: 10px; margin-top: 12px; }
+  /* 弹窗（规则查看/编辑） */
+  .modal-mask {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6);
+    display: none; align-items: center; justify-content: center; z-index: 100;
+  }
+  .modal-mask.open { display: flex; }
+  .modal {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    width: 92vw; max-width: 1100px; height: 84vh; display: flex; flex-direction: column;
+    padding: 14px; box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  }
+  .modal .modal-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .modal .modal-head label { margin: 0; flex: 1; }
+  .modal textarea {
+    flex: 1; resize: none; min-height: 0; font-size: 12px;
+    font-family: Consolas, "Cascadia Mono", monospace; line-height: 1.55;
+    white-space: pre; overflow: auto;
+  }
+  .modal .modal-foot { display: flex; gap: 10px; margin-top: 10px; }
+  .modal .btn { flex: 0 0 auto; padding: 9px 18px; }
+  .modal-close { background: none; border: none; color: var(--muted); font-size: 18px; cursor: pointer; line-height: 1; padding: 2px 6px; }
+  .modal-close:hover { color: var(--text); }
+  .link-btn {
+    background: none; border: 1px solid var(--line); border-radius: 8px; color: var(--text);
+    padding: 8px 12px; font-size: 12px; cursor: pointer; transition: border-color .15s;
+  }
+  .link-btn:hover { border-color: var(--green); }
   .btn {
     flex: 1; border: none; border-radius: 8px; padding: 11px 0;
     font-size: 14px; font-weight: 600; cursor: pointer; color: #fff;
@@ -94,14 +121,26 @@
     </div>
     <div class="card">
       <label>当前路由规则（<span id="ruleHint">默认直连；仅 gfw 代理清单走代理</span>）</label>
-      <label style="margin-top:4px;">完整生效规则（只读，含 gfw 代理清单 <span id="gfwCount">—</span> 条）</label>
-      <textarea id="effectiveRules" readonly style="min-height:140px; font-family:Consolas,monospace; font-size:11px; color:var(--muted);"></textarea>
-      <label style="margin-top:10px;">自定义规则（可编辑，追加在 gfw 规则之前）</label>
-      <textarea id="rules" style="min-height:120px; font-family:Consolas,monospace; font-size:12px;"></textarea>
-      <div class="row">
-        <button class="btn ghost" id="rulesSave" disabled>保存并生效</button>
+      <div class="row" style="margin-top:6px;">
+        <button class="link-btn" id="openEffective">完整生效规则（只读，含 gfw 代理清单 <span id="gfwCount">—</span> 条）</button>
+        <button class="link-btn" id="openRules">自定义规则（可编辑，追加在 gfw 规则之前）</button>
       </div>
       <div class="hint">规则格式：<code>类型,参数,DIRECT/auto</code>，例如 <code>DOMAIN-SUFFIX,baidu.com,DIRECT</code>。保存后自动重启内核立即生效（未连接时保存，下次连接生效）。</div>
+    </div>
+    <div class="card">
+      <label>CF 优选 IP（可选；多个用换行或逗号分隔，最多 5 个；仅对 ws+tls 的 vless/vmess/trojan 节点生效，留空则直接用订阅原地址）</label>
+      <div class="row" style="flex-wrap:wrap; gap:6px; margin-top:6px;">
+        <span class="hint" style="margin:0;">预设：</span>
+        <button class="btn ghost" id="optPreset1">优选 A</button>
+        <button class="btn ghost" id="optPreset2">优选 B</button>
+        <button class="btn ghost" id="optPreset3">优选 C（含 IPv6）</button>
+        <button class="btn ghost" id="optClear">清空</button>
+      </div>
+      <textarea id="optIps" style="margin-top:8px; min-height:80px; font-family:Consolas,monospace; font-size:12px;" placeholder="每行一个 IP，例如：&#10;104.16.32.1&#10;162.159.0.1"></textarea>
+      <div class="row" style="margin-top:8px;">
+        <button class="btn ghost" id="optSave">保存优选 IP</button>
+        <span class="hint" id="optHint">保存后重新连接生效；连接中保存则下次连接生效。</span>
+      </div>
     </div>
     <div class="card">
       <details>
@@ -110,6 +149,35 @@
       </details>
     </div>
   </main>
+
+  <!-- 完整生效规则弹窗（只读） -->
+  <div class="modal-mask" id="effectiveModal">
+    <div class="modal">
+      <div class="modal-head">
+        <label>完整生效规则（只读，含 gfw 代理清单 <span id="gfwCountM">—</span> 条）</label>
+        <button class="modal-close" id="closeEffective" title="关闭">✕</button>
+      </div>
+      <textarea id="effectiveRules" readonly style="color:var(--muted);"></textarea>
+      <div class="modal-foot">
+        <span class="hint" style="flex:1; margin:0;">提示：此窗口内容为当前生效的全部规则，不可编辑。如需调整，请在「自定义规则」弹窗中添加。</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 自定义规则弹窗（可编辑） -->
+  <div class="modal-mask" id="rulesModal">
+    <div class="modal">
+      <div class="modal-head">
+        <label>自定义规则（可编辑，追加在 gfw 规则之前）</label>
+        <button class="modal-close" id="closeRules" title="关闭">✕</button>
+      </div>
+      <textarea id="rules" style="min-height:0;"></textarea>
+      <div class="modal-foot">
+        <span class="hint" style="flex:1; margin:0;">格式：<code>类型,参数,DIRECT/auto</code>，例如 <code>DOMAIN-SUFFIX,baidu.com,DIRECT</code>。保存后自动重启内核立即生效。</span>
+        <button class="btn ghost" id="rulesSave" disabled>保存并生效</button>
+      </div>
+    </div>
+  </div>
 
 <script>
   const $ = id => document.getElementById(id);
@@ -204,12 +272,28 @@
       const eff = await invoke('get_effective_rules');
       $('effectiveRules').value = eff.rules || '';
       $('gfwCount').textContent = eff.gfw_count || 0;
+      $('gfwCountM').textContent = eff.gfw_count || 0;
       // 自定义规则（可编辑）
       const text = await invoke('get_rules');
       $('rules').value = text;
       $('rulesSave').disabled = true;
     } catch (e) { console.error('load rules err', e); }
   }
+  // 弹窗开关
+  function openModal(id) { $(id).classList.add('open'); }
+  function closeModal(id) { $(id).classList.remove('open'); }
+  $('openEffective').onclick = () => openModal('effectiveModal');
+  $('closeEffective').onclick = () => closeModal('effectiveModal');
+  $('openRules').onclick = () => { loadRules(); openModal('rulesModal'); };
+  $('closeRules').onclick = () => closeModal('rulesModal');
+  // 点遮罩空白处关闭
+  ['effectiveModal', 'rulesModal'].forEach(id => {
+    $(id).addEventListener('click', e => { if (e.target === $(id)) closeModal(id); });
+  });
+  // Esc 关闭弹窗
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { closeModal('effectiveModal'); closeModal('rulesModal'); }
+  });
   $('rules').addEventListener('input', () => {
     $('rulesSave').disabled = false;
   });
@@ -229,6 +313,48 @@
     $('rulesSave').textContent = '保存并生效';
   };
   loadRules();
+
+  // ── CF 优选 IP 预设 ─────────────────────────────────────────────
+  // 常用优选 IP（社区实测；可自行修改）。仅对 ws+tls 的 vless/vmess/trojan 节点生效。
+  const OPT_PRESETS = {
+    a: ['104.16.32.1', '104.16.64.1', '104.17.0.1', '162.159.0.1', '172.64.0.1'],
+    b: ['104.18.0.1', '104.18.16.1', '104.19.0.1', '162.159.8.1', '198.41.200.1'],
+    c: ['2606:4700::1', '2606:4700:4700::1111', '104.16.32.1', '162.159.0.1', '172.64.0.1'],
+  };
+  // 加载已保存的优选 IP
+  async function loadOptIps() {
+    try {
+      const list = await invoke('load_opt_ips');
+      $('optIps').value = (Array.isArray(list) ? list : []).join('\n');
+    } catch (e) { console.error('load opt ips err', e); }
+  }
+  // 预设按钮：一键填入（去重，最多 5 个）
+  function fillPreset(key) {
+    const list = OPT_PRESETS[key] || [];
+    $('optIps').value = list.join('\n');
+    $('optHint').textContent = '已填入预设「' + (key === 'a' ? '优选 A' : key === 'b' ? '优选 B' : '优选 C（含 IPv6）') + '」，点「保存优选 IP」生效。';
+  }
+  $('optPreset1').onclick = () => fillPreset('a');
+  $('optPreset2').onclick = () => fillPreset('b');
+  $('optPreset3').onclick = () => fillPreset('c');
+  $('optClear').onclick = () => { $('optIps').value = ''; $('optHint').textContent = '已清空（使用订阅原地址）。'; };
+  // 保存优选 IP
+  $('optSave').onclick = async () => {
+    const text = $('optIps').value.trim();
+    // 换行/逗号统一分隔，去重，截断到 5 个
+    const parts = text.split(/[\n,，]+/).map(s => s.trim()).filter(Boolean);
+    const uniq = [...new Set(parts)];
+    const limited = uniq.slice(0, 5);
+    $('optIps').value = limited.join('\n');
+    try {
+      await invoke('save_opt_ips', { content: limited.join('\n') });
+      $('optHint').textContent = '优选 IP 已保存（' + limited.length + ' 个）——重新连接后生效。';
+      showErr('');
+    } catch (e) {
+      showErr('保存优选 IP 失败: ' + e);
+    }
+  };
+  loadOptIps();
 
   poll();
   setInterval(poll, 3000);
