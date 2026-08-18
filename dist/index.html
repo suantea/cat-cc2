@@ -18,15 +18,31 @@
   }
   header {
     display: flex; align-items: center; gap: 10px;
-    padding: 12px 16px; border-bottom: 1px solid var(--line);
+    padding: 10px 16px; border-bottom: 1px solid var(--line);
   }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--gray); transition: background .3s; }
   .dot.running { background: var(--green); box-shadow: 0 0 8px var(--green); }
   .dot.error { background: var(--red); box-shadow: 0 0 8px var(--red); }
-  header h1 { font-size: 16px; font-weight: 600; letter-spacing: .5px; }
+  header h1 { font-size: 15px; font-weight: 600; letter-spacing: .5px; }
   header span.sub { color: var(--muted); font-size: 12px; }
 
-  main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  /* 选项卡 */
+  nav.tabs {
+    display: flex; gap: 4px; padding: 8px 16px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .tab {
+    background: none; border: 1px solid transparent; border-bottom: none;
+    color: var(--muted); font-size: 13px; font-weight: 500;
+    padding: 8px 18px; cursor: pointer; border-radius: 8px 8px 0 0;
+    transition: color .15s, background .15s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); background: var(--card); border-color: var(--line); }
+
+  main { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; }
+  .panel { display: none; flex-direction: column; gap: 12px; }
+  .panel.active { display: flex; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
   label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
   textarea {
@@ -36,7 +52,32 @@
   }
   textarea:focus { border-color: var(--green); }
   .row { display: flex; gap: 10px; margin-top: 12px; }
-  /* 弹窗（规则查看/编辑） */
+  .btn {
+    flex: 1; border: none; border-radius: 8px; padding: 10px 0;
+    font-size: 13px; font-weight: 600; cursor: pointer; color: #fff;
+    transition: filter .15s, opacity .15s;
+  }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn:hover:not(:disabled) { filter: brightness(1.1); }
+  .btn.connect { background: var(--green); }
+  .btn.stop { background: var(--red); }
+  .btn.ghost { background: var(--line); color: var(--text); font-weight: 500; }
+  .btn.sm { flex: 0 0 auto; padding: 7px 14px; font-size: 12px; }
+
+  .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .stat { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .stat .k { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+  .stat .v { font-size: 14px; font-weight: 600; word-break: break-all; }
+  .stat .v.green { color: var(--green); }
+  .stat .v.red { color: var(--red); }
+  .stat.full { grid-column: 1 / -1; }
+
+  .err { color: var(--red); font-size: 12px; margin-top: 10px; word-break: break-all; display: none; }
+  .hint { color: var(--muted); font-size: 11px; margin-top: 8px; line-height: 1.5; }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+
+  /* 弹窗 */
   .modal-mask {
     position: fixed; inset: 0; background: rgba(0,0,0,.6);
     display: none; align-items: center; justify-content: center; z-index: 100;
@@ -63,53 +104,31 @@
     padding: 8px 12px; font-size: 12px; cursor: pointer; transition: border-color .15s;
   }
   .link-btn:hover { border-color: var(--green); }
-  .btn {
-    flex: 1; border: none; border-radius: 8px; padding: 11px 0;
-    font-size: 14px; font-weight: 600; cursor: pointer; color: #fff;
-    transition: filter .15s, opacity .15s;
-  }
-  .btn:disabled { opacity: .5; cursor: not-allowed; }
-  .btn:hover:not(:disabled) { filter: brightness(1.1); }
-  .btn.connect { background: var(--green); }
-  .btn.stop { background: var(--red); }
-  .btn.ghost { background: var(--line); color: var(--text); font-weight: 500; }
-
-  .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
-  .stat { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
-  .stat .k { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
-  .stat .v { font-size: 15px; font-weight: 600; word-break: break-all; }
-  .stat .v.green { color: var(--green); }
-  .stat .v.red { color: var(--red); }
-  .stat.full { grid-column: 1 / -1; }
-
-  .err { color: var(--red); font-size: 12px; margin-top: 10px; word-break: break-all; display: none; }
-  .hint { color: var(--muted); font-size: 11px; margin-top: 8px; line-height: 1.5; }
-  ::-webkit-scrollbar { width: 8px; }
-  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
 </style>
 </head>
 <body>
-  <header>
-    <div class="dot" id="dot"></div>
-    <h1>Cat CC2</h1>
-    <span class="sub" id="titleState">未连接</span>
-  </header>
-  <main>
+<header>
+  <div class="dot" id="dot"></div>
+  <h1>Cat CC2</h1>
+  <span class="sub" id="titleState">未连接</span>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-panel="connect">连接</button>
+  <button class="tab" data-panel="settings">设置</button>
+  <button class="tab" data-panel="logs">日志</button>
+</nav>
+
+<main>
+  <!-- 连接 -->
+  <section class="panel active" id="panel-connect">
     <div class="card">
-      <label for="sub">订阅链接（URL 或直接粘贴节点）</label>
-      <textarea id="sub" placeholder="https://example.com/sub 或 vmess:// ss:// trojan:// ..."></textarea>
+      <label for="sub">订阅链接（URL 或直接粘贴节点，支持多订阅源换行分隔）</label>
+      <textarea id="sub" style="min-height:76px;" placeholder="https://example.com/sub 或 vmess:// ss:// trojan:// ..."></textarea>
       <div class="row">
         <button class="btn connect" id="connectBtn">一键连接</button>
         <button class="btn stop" id="stopBtn" disabled>断开</button>
-      </div>
-      <div class="row">
         <button class="btn ghost" id="parseBtn">解析预览</button>
-      </div>
-      <label for="optIps">CF 优选 IP（可选；多个用换行或逗号分隔，最多 5 个；仅对 ws+tls 的 vless/vmess/trojan 节点生效，留空则直接用订阅原地址）</label>
-      <textarea id="optIps" placeholder="104.16.0.0
-104.17.0.0"></textarea>
-      <div class="row">
-        <button class="btn ghost" id="optSaveBtn">保存优选 IP</button>
       </div>
       <div class="hint" id="hint">连接后自动选择最快节点（url-test），内核异常自动重启最多 3 次。</div>
       <div class="err" id="err"></div>
@@ -125,69 +144,86 @@
         <div class="stat full"><div class="k">流量（下行 ↓ / 上行 ↑，本次连接累计）</div><div class="v" id="stTraffic">—</div></div>
       </div>
     </div>
+  </section>
+
+  <!-- 设置 -->
+  <section class="panel" id="panel-settings">
     <div class="card">
-      <label>当前路由规则（<span id="ruleHint">默认直连；仅 gfw 代理清单走代理</span>）</label>
+      <label for="optIps">CF 优选 IP（可选；多个用换行或逗号分隔，最多 5 个；仅对 ws+tls 的 vless/vmess/trojan 节点生效，留空则直接用订阅原地址）</label>
+      <div class="row" style="flex-wrap:wrap; gap:6px; margin-top:6px;">
+        <span class="hint" style="margin:0;">预设：</span>
+        <button class="btn ghost sm" id="optPreset1">优选 A</button>
+        <button class="btn ghost sm" id="optPreset2">优选 B</button>
+        <button class="btn ghost sm" id="optPreset3">优选 C（含 IPv6）</button>
+        <button class="btn ghost sm" id="optClear">清空</button>
+      </div>
+      <textarea id="optIps" style="margin-top:8px; min-height:80px; font-family:Consolas,monospace; font-size:12px;" placeholder="每行一个 IP，例如：&#10;104.16.32.1&#10;162.159.0.1"></textarea>
+      <div class="row" style="margin-top:8px;">
+        <button class="btn ghost sm" id="optSave">保存优选 IP</button>
+        <span class="hint" id="optHint" style="align-self:center; margin:0;">保存后重新连接生效；连接中保存则下次连接生效。</span>
+      </div>
+    </div>
+    <div class="card">
+      <label>路由规则（<span id="ruleHint">默认直连；仅 gfw 代理清单走代理</span>）</label>
       <div class="row" style="margin-top:6px;">
         <button class="link-btn" id="openEffective">完整生效规则（只读，含 gfw 代理清单 <span id="gfwCount">—</span> 条）</button>
         <button class="link-btn" id="openRules">自定义规则（可编辑，追加在 gfw 规则之前）</button>
       </div>
       <div class="hint">规则格式：<code>类型,参数,DIRECT/auto</code>，例如 <code>DOMAIN-SUFFIX,baidu.com,DIRECT</code>。保存后自动重启内核立即生效（未连接时保存，下次连接生效）。</div>
     </div>
-    <div class="card">
-      <label>CF 优选 IP（可选；多个用换行或逗号分隔，最多 5 个；仅对 ws+tls 的 vless/vmess/trojan 节点生效，留空则直接用订阅原地址）</label>
-      <div class="row" style="flex-wrap:wrap; gap:6px; margin-top:6px;">
-        <span class="hint" style="margin:0;">预设：</span>
-        <button class="btn ghost" id="optPreset1">优选 A</button>
-        <button class="btn ghost" id="optPreset2">优选 B</button>
-        <button class="btn ghost" id="optPreset3">优选 C（含 IPv6）</button>
-        <button class="btn ghost" id="optClear">清空</button>
-      </div>
-      <textarea id="optIps" style="margin-top:8px; min-height:80px; font-family:Consolas,monospace; font-size:12px;" placeholder="每行一个 IP，例如：&#10;104.16.32.1&#10;162.159.0.1"></textarea>
-      <div class="row" style="margin-top:8px;">
-        <button class="btn ghost" id="optSave">保存优选 IP</button>
-        <span class="hint" id="optHint">保存后重新连接生效；连接中保存则下次连接生效。</span>
-      </div>
-    </div>
-    <div class="card">
-      <details>
-        <summary style="cursor:pointer; color:var(--muted); font-size:12px;">运行日志（mihomo 内核，最近 200 行）</summary>
-        <textarea id="logs" readonly style="margin-top:8px; min-height:120px; font-family:Consolas,monospace; font-size:11px; color:var(--muted);"></textarea>
-      </details>
-    </div>
-  </main>
+  </section>
 
-  <!-- 完整生效规则弹窗（只读） -->
-  <div class="modal-mask" id="effectiveModal">
-    <div class="modal">
-      <div class="modal-head">
-        <label>完整生效规则（只读，含 gfw 代理清单 <span id="gfwCountM">—</span> 条）</label>
-        <button class="modal-close" id="closeEffective" title="关闭">✕</button>
-      </div>
-      <textarea id="effectiveRules" readonly style="color:var(--muted);"></textarea>
-      <div class="modal-foot">
-        <span class="hint" style="flex:1; margin:0;">提示：此窗口内容为当前生效的全部规则，不可编辑。如需调整，请在「自定义规则」弹窗中添加。</span>
-      </div>
+  <!-- 日志 -->
+  <section class="panel" id="panel-logs">
+    <div class="card">
+      <label>运行日志（mihomo 内核，最近 200 行）</label>
+      <textarea id="logs" readonly style="min-height:300px; font-family:Consolas,monospace; font-size:11px; color:var(--muted);"></textarea>
+    </div>
+  </section>
+</main>
+
+<!-- 完整生效规则弹窗（只读） -->
+<div class="modal-mask" id="effectiveModal">
+  <div class="modal">
+    <div class="modal-head">
+      <label>完整生效规则（只读，含 gfw 代理清单 <span id="gfwCountM">—</span> 条）</label>
+      <button class="modal-close" id="closeEffective" title="关闭">✕</button>
+    </div>
+    <textarea id="effectiveRules" readonly style="color:var(--muted);"></textarea>
+    <div class="modal-foot">
+      <span class="hint" style="flex:1; margin:0;">提示：此窗口内容为当前生效的全部规则，不可编辑。如需调整，请在「自定义规则」弹窗中添加。</span>
     </div>
   </div>
+</div>
 
-  <!-- 自定义规则弹窗（可编辑） -->
-  <div class="modal-mask" id="rulesModal">
-    <div class="modal">
-      <div class="modal-head">
-        <label>自定义规则（可编辑，追加在 gfw 规则之前）</label>
-        <button class="modal-close" id="closeRules" title="关闭">✕</button>
-      </div>
-      <textarea id="rules" style="min-height:0;"></textarea>
-      <div class="modal-foot">
-        <span class="hint" style="flex:1; margin:0;">格式：<code>类型,参数,DIRECT/auto</code>，例如 <code>DOMAIN-SUFFIX,baidu.com,DIRECT</code>。保存后自动重启内核立即生效。</span>
-        <button class="btn ghost" id="rulesSave" disabled>保存并生效</button>
-      </div>
+<!-- 自定义规则弹窗（可编辑） -->
+<div class="modal-mask" id="rulesModal">
+  <div class="modal">
+    <div class="modal-head">
+      <label>自定义规则（可编辑，追加在 gfw 规则之前）</label>
+      <button class="modal-close" id="closeRules" title="关闭">✕</button>
+    </div>
+    <textarea id="rules" style="min-height:0;"></textarea>
+    <div class="modal-foot">
+      <span class="hint" style="flex:1; margin:0;">格式：<code>类型,参数,DIRECT/auto</code>，例如 <code>DOMAIN-SUFFIX,baidu.com,DIRECT</code>。保存后自动重启内核立即生效。</span>
+      <button class="btn ghost" id="rulesSave" disabled>保存并生效</button>
     </div>
   </div>
+</div>
 
 <script>
   const $ = id => document.getElementById(id);
   const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+
+  // ── 选项卡切换 ──
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      $('panel-' + tab.dataset.panel).classList.add('active');
+    };
+  });
 
   function fmtBytes(n) {
     if (!n) return '0 B';
@@ -222,88 +258,66 @@
     try {
       const s = await invoke('status');
       setState(s);
-    } catch (e) { console.error('status err', e); }
-    try {
       const logs = await invoke('get_logs', { limit: 200 });
-      $('logs').value = logs;
-    } catch (e) { /* 日志获取失败忽略 */ }
+      $('logs').value = (Array.isArray(logs) ? logs : []).join('\n');
+    } catch (e) { console.error('poll err', e); }
   }
 
   $('connectBtn').onclick = async () => {
-    const sub = $('sub').value.trim();
-    if (!sub) { showErr('请先粘贴订阅链接'); return; }
     showErr('');
-    $('connectBtn').disabled = true;
-    $('connectBtn').textContent = '连接中…';
+    const sub = $('sub').value.trim();
+    if (!sub) { showErr('请先粘贴订阅链接或节点'); return; }
     try {
       const r = await invoke('connect', { subscription: sub });
-      $('hint').textContent = `已连接，共 ${r.nodes} 个节点，监听端口 ${r.mixedPort}。`;
-      $('connectBtn').textContent = '一键连接';
+      $('hint').textContent = '已连接 ' + r.nodes + ' 个节点，混合端口 ' + r.mixedPort;
       poll();
-    } catch (e) {
-      showErr(String(e));
-      $('connectBtn').textContent = '一键连接';
-      $('connectBtn').disabled = false;
-    }
+    } catch (e) { showErr('连接失败: ' + e); }
   };
 
   $('stopBtn').onclick = async () => {
-    try { await invoke('disconnect'); } catch (e) { console.error(e); }
-    poll();
+    try { await invoke('disconnect'); $('hint').textContent = '已断开，系统代理已还原。'; poll(); }
+    catch (e) { showErr('断开失败: ' + e); }
   };
 
   $('parseBtn').onclick = async () => {
     const sub = $('sub').value.trim();
-    if (!sub) { showErr('请先粘贴订阅链接'); return; }
-    $('parseBtn').textContent = '解析中…';
+    if (!sub) { showErr('请先粘贴订阅链接或节点'); return; }
     try {
       const r = await invoke('parse_sub', { subscription: sub });
-      const names = (r.names || []).join('、');
-      $('hint').textContent = `解析到 ${r.count} 个节点：${names}${r.count > 50 ? ' …' : ''}`;
-      showErr('');
-    } catch (e) {
-      showErr(String(e));
-    }
-    $('parseBtn').textContent = '解析预览';
+      $('hint').textContent = '解析到 ' + (Array.isArray(r) ? r.length : '?') + ' 个节点（预览见日志选项卡）';
+      poll();
+    } catch (e) { showErr('解析失败: ' + e); }
   };
 
   // 预填上次订阅
   try { const saved = localStorage.getItem('catcc2_sub'); if (saved) $('sub').value = saved; } catch {}
   $('sub').addEventListener('change', () => { try { localStorage.setItem('catcc2_sub', $('sub').value); } catch {} });
 
-  // 加载当前路由规则（完整生效规则只读展示 + 自定义规则可编辑）
+  // ── 规则（弹窗）──
   async function loadRules() {
     try {
-      // 完整生效规则（含 gfw 代理清单，只读）
       const eff = await invoke('get_effective_rules');
       $('effectiveRules').value = eff.rules || '';
       $('gfwCount').textContent = eff.gfw_count || 0;
       $('gfwCountM').textContent = eff.gfw_count || 0;
-      // 自定义规则（可编辑）
       const text = await invoke('get_rules');
       $('rules').value = text;
       $('rulesSave').disabled = true;
     } catch (e) { console.error('load rules err', e); }
   }
-  // 弹窗开关
   function openModal(id) { $(id).classList.add('open'); }
   function closeModal(id) { $(id).classList.remove('open'); }
-  $('openEffective').onclick = () => openModal('effectiveModal');
+  $('openEffective').onclick = () => { loadRules(); openModal('effectiveModal'); };
   $('closeEffective').onclick = () => closeModal('effectiveModal');
   $('openRules').onclick = () => { loadRules(); openModal('rulesModal'); };
   $('closeRules').onclick = () => closeModal('rulesModal');
-  // 点遮罩空白处关闭
   ['effectiveModal', 'rulesModal'].forEach(id => {
     $(id).addEventListener('click', e => { if (e.target === $(id)) closeModal(id); });
   });
-  // Esc 关闭弹窗
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') { closeModal('effectiveModal'); closeModal('rulesModal'); }
   });
-  $('rules').addEventListener('input', () => {
-    $('rulesSave').disabled = false;
-  });
-  // 保存并生效：保存后总是自动重启内核，立即生效
+  $('rules').addEventListener('input', () => { $('rulesSave').disabled = false; });
   $('rulesSave').onclick = async () => {
     $('rulesSave').disabled = true;
     $('rulesSave').textContent = '保存中…';
@@ -320,21 +334,18 @@
   };
   loadRules();
 
-  // ── CF 优选 IP 预设 ─────────────────────────────────────────────
-  // 常用优选 IP（社区实测；可自行修改）。仅对 ws+tls 的 vless/vmess/trojan 节点生效。
+  // ── CF 优选 IP 预设 ──
   const OPT_PRESETS = {
     a: ['104.16.32.1', '104.16.64.1', '104.17.0.1', '162.159.0.1', '172.64.0.1'],
     b: ['104.18.0.1', '104.18.16.1', '104.19.0.1', '162.159.8.1', '198.41.200.1'],
     c: ['2606:4700::1', '2606:4700:4700::1111', '104.16.32.1', '162.159.0.1', '172.64.0.1'],
   };
-  // 加载已保存的优选 IP
   async function loadOptIps() {
     try {
       const list = await invoke('load_opt_ips');
       $('optIps').value = (Array.isArray(list) ? list : []).join('\n');
     } catch (e) { console.error('load opt ips err', e); }
   }
-  // 预设按钮：一键填入（去重，最多 5 个）
   function fillPreset(key) {
     const list = OPT_PRESETS[key] || [];
     $('optIps').value = list.join('\n');
@@ -344,10 +355,8 @@
   $('optPreset2').onclick = () => fillPreset('b');
   $('optPreset3').onclick = () => fillPreset('c');
   $('optClear').onclick = () => { $('optIps').value = ''; $('optHint').textContent = '已清空（使用订阅原地址）。'; };
-  // 保存优选 IP
   $('optSave').onclick = async () => {
     const text = $('optIps').value.trim();
-    // 换行/逗号统一分隔，去重，截断到 5 个
     const parts = text.split(/[\n,，]+/).map(s => s.trim()).filter(Boolean);
     const uniq = [...new Set(parts)];
     const limited = uniq.slice(0, 5);
