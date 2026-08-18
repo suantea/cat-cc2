@@ -62,6 +62,10 @@ pub struct Node {
     pub alpn: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reduce_rtt: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub up: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub down: Option<u32>,
 }
 
 fn decode_b64(s: &str) -> Option<String> {
@@ -348,6 +352,32 @@ fn parse_share_link(link: &str) -> Option<Node> {
                 udp_relay_mode: q("udp_relay_mode").or_else(|| Some("native".into())),
                 alpn: q("alpn"),
                 reduce_rtt: q("reduce_rtt").map(|v| v == "1" || v == "true"),
+                ..Default::default()
+            });
+        }
+    }
+    // hysteria1：hysteria://auth@host:port?upmbps=100&downmbps=100&obfs=xplus&obfsParam=xxx
+    if link.starts_with("hysteria://") {
+        if let Ok(u) = Url::parse(link) {
+            let host = u.host_str().unwrap_or("").to_string();
+            let q = |k: &str| {
+                u.query_pairs()
+                    .find(|(x, _)| x == k)
+                    .map(|(_, v)| v.into_owned())
+            };
+            return Some(Node {
+                r#type: "hysteria".into(),
+                name: name_from_hash(&u),
+                server: host.clone(),
+                port: u.port().unwrap_or(443),
+                // hysteria1 的 auth 串（可能带 Base64 前缀或明文）
+                password: Some(u.username().to_string()),
+                sni: q("sni").or_else(|| Some(host.clone())),
+                obfs: q("obfs"),
+                obfs_password: q("obfsParam").or_else(|| q("obfs-password")),
+                insecure: q("insecure").map(|v| v == "1" || v == "true"),
+                up: q("upmbps").and_then(|v| v.parse().ok()),
+                down: q("downmbps").and_then(|v| v.parse().ok()),
                 ..Default::default()
             });
         }
@@ -906,6 +936,33 @@ mod tests {
         assert_eq!(m.congestion_controller.as_deref(), Some("bbr"));
         assert_eq!(m.udp_relay_mode.as_deref(), Some("native"));
         assert_eq!(m.reduce_rtt, None);
+    }
+
+    #[test]
+    fn parse_hysteria1_links() {
+        // 完整版：auth@host + upmbps/downmbps/obfs/obfsParam/sni/insecure 参数
+        let h1 = "hysteria://auth-secret@1.2.3.4:443?upmbps=100&downmbps=100&obfs=xplus&obfsParam=obfs-key&sni=example.com&insecure=1#HY1节点";
+        let n = parse_share_link(h1).expect("hysteria:// 应解析成功");
+        assert_eq!(n.r#type, "hysteria");
+        assert_eq!(n.server, "1.2.3.4");
+        assert_eq!(n.port, 443);
+        assert_eq!(n.password.as_deref(), Some("auth-secret"));
+        assert_eq!(n.up, Some(100));
+        assert_eq!(n.down, Some(100));
+        assert_eq!(n.obfs.as_deref(), Some("xplus"));
+        assert_eq!(n.obfs_password.as_deref(), Some("obfs-key"));
+        assert_eq!(n.sni.as_deref(), Some("example.com"));
+        assert_eq!(n.insecure, Some(true));
+        assert_eq!(n.name, "HY1节点");
+
+        // 缺省：无 sni → host；无带宽 → None；无 obfs → None
+        let m = parse_share_link("hysteria://auth@9.9.9.9:8443#简版").expect("hysteria:// 简版应解析成功");
+        assert_eq!(m.r#type, "hysteria");
+        assert_eq!(m.sni.as_deref(), Some("9.9.9.9"));
+        assert_eq!(m.up, None);
+        assert_eq!(m.down, None);
+        assert_eq!(m.obfs, None);
+        assert_eq!(m.insecure, None);
     }
 
     #[test]
