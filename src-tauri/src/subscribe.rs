@@ -48,6 +48,12 @@ pub struct Node {
     pub plugin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugin_opts: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub obfs: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub obfs_password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub insecure: Option<bool>,
 }
 
 fn decode_b64(s: &str) -> Option<String> {
@@ -281,6 +287,32 @@ fn parse_share_link(link: &str) -> Option<Node> {
                 reality_pbk: q("pbk"),
                 reality_sid: q("sid"),
                 reality_fp: q("fp").or_else(|| Some("chrome".into())),
+                ..Default::default()
+            });
+        }
+    }
+    if link.starts_with("hy2://") || link.starts_with("hysteria2://") {
+        if let Ok(u) = Url::parse(
+            &link
+                .replacen("hy2://", "https://", 1)
+                .replacen("hysteria2://", "https://", 1),
+        ) {
+            let host = u.host_str().unwrap_or("").to_string();
+            let q = |k: &str| {
+                u.query_pairs()
+                    .find(|(x, _)| x == k)
+                    .map(|(_, v)| v.into_owned())
+            };
+            return Some(Node {
+                r#type: "hysteria2".into(),
+                name: name_from_hash(&u),
+                server: host.clone(),
+                port: u.port().unwrap_or(443),
+                password: Some(u.username().to_string()),
+                sni: q("sni").or_else(|| Some(host.clone())),
+                obfs: q("obfs"),
+                obfs_password: q("obfs-password"),
+                insecure: q("insecure").map(|v| v == "1" || v == "true"),
                 ..Default::default()
             });
         }
@@ -790,5 +822,44 @@ mod tests {
         assert_eq!(nodes.len(), 2, "同服务器同凭证去重，不同服务器保留");
         assert_eq!(nodes[0].name, "A");
         assert_eq!(nodes[1].name, "C");
+    }
+
+    #[test]
+    fn parse_hysteria2_links() {
+        // 完整版：password@host + sni/obfs/insecure 参数
+        let hy2 = "hy2://passw0rd@1.2.3.4:443?sni=example.com&obfs=salamander&obfs-password=obfs-secret&insecure=1#HY2节点";
+        let n = parse_share_link(hy2).expect("hy2:// 应解析成功");
+        assert_eq!(n.r#type, "hysteria2");
+        assert_eq!(n.server, "1.2.3.4");
+        assert_eq!(n.port, 443);
+        assert_eq!(n.password.as_deref(), Some("passw0rd"));
+        assert_eq!(n.sni.as_deref(), Some("example.com"));
+        assert_eq!(n.obfs.as_deref(), Some("salamander"));
+        assert_eq!(n.obfs_password.as_deref(), Some("obfs-secret"));
+        assert_eq!(n.insecure, Some(true));
+        assert_eq!(n.name, "HY2节点");
+
+        // 别名 hysteria2:// + 缺省（无 sni → 用 host）
+        let h2 = "hysteria2://pw@9.9.9.9:8443#别名";
+        let m = parse_share_link(h2).expect("hysteria2:// 应解析成功");
+        assert_eq!(m.r#type, "hysteria2");
+        assert_eq!(m.port, 8443);
+        assert_eq!(m.sni.as_deref(), Some("9.9.9.9"));
+        assert_eq!(m.insecure, None);
+    }
+
+    #[test]
+    fn parse_http_and_socks_links() {
+        let http = "http://user:pass@1.2.3.4:8080#HTTP节点";
+        let h = parse_share_link(http).expect("http:// 应解析成功");
+        assert_eq!(h.r#type, "http");
+        assert_eq!(h.username.as_deref(), Some("user"));
+        assert_eq!(h.password.as_deref(), Some("pass"));
+
+        let socks = "socks5://1.2.3.4:1080#SOCKS节点";
+        let s = parse_share_link(socks).expect("socks5:// 应解析成功");
+        assert_eq!(s.r#type, "socks");
+        assert_eq!(s.server, "1.2.3.4");
+        assert_eq!(s.port, 1080);
     }
 }

@@ -357,6 +357,38 @@ fn outbound_yaml(n: &Node) -> Option<String> {
                 }
             }
         }
+        "hysteria2" => {
+            push(&mut parts, format!("    server: {}", n.server));
+            push(&mut parts, format!("    port: {}", n.port));
+            push(
+                &mut parts,
+                format!(
+                    "    password: {}",
+                    yaml_str(n.password.as_deref().unwrap_or(""))
+                ),
+            );
+            push(
+                &mut parts,
+                format!(
+                    "    sni: {}",
+                    yaml_str(n.sni.as_deref().unwrap_or(&n.server))
+                ),
+            );
+            if n.insecure == Some(true) {
+                push(&mut parts, "    insecure: true".into());
+            }
+            if let Some(o) = n.obfs.as_deref() {
+                if !o.is_empty() {
+                    push(&mut parts, format!("    obfs: {}", yaml_str(o)));
+                    if let Some(op) = n.obfs_password.as_deref() {
+                        if !op.is_empty() {
+                            push(&mut parts, format!("    obfs-password: {}", yaml_str(op)));
+                        }
+                    }
+                }
+            }
+            push(&mut parts, "    udp: true".into());
+        }
         "http" => {
             push(&mut parts, format!("    server: {}", n.server));
             push(&mut parts, format!("    port: {}", n.port));
