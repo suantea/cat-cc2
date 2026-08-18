@@ -82,7 +82,7 @@ mod win {
     }
 
     // 解析 reg query 值行：形如 `    ProxyServer    REG_SZ    127.0.0.1:7890`
-    fn parse_reg_value_line(line: &str) -> Option<String> {
+    pub(crate) fn parse_reg_value_line(line: &str) -> Option<String> {
         let tokens: Vec<&str> = line.split_whitespace().collect();
         if tokens.iter().any(|t| t.starts_with("REG_")) {
             tokens.last().map(|v| v.to_string())
@@ -291,6 +291,7 @@ pub fn restore_stale_proxy_if_dead() -> bool {
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::win::parse_local_proxy_port;
+    use super::win::parse_reg_value_line;
 
     #[test]
     fn parse_local_proxy_port_accepts_localhost() {
