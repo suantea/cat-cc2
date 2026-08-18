@@ -3,14 +3,56 @@ use crate::subscribe::{parse_subscription, Node};
 use serde::Serialize;
 use serde_json::json;
 use std::io::Write;
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const MAX_RETRIES: u32 = 3;
+// 订阅自动刷新 / 全节点失效自动重拉
+const REFRESH_INTERVAL: Duration = Duration::from_secs(6 * 3600); // 每 6h 定时刷新
+const ALL_DEAD_INTERVAL: Duration = Duration::from_secs(60); // 全挂检查间隔
+const ALL_DEAD_THRESHOLD: u32 = 3; // 连续 3 次全挂才触发重拉，防误判
+const REFRESH_COOLDOWN: Duration = Duration::from_secs(120); // 两次实际重拉最小间隔
+
+// 内核二进制名：Windows 为 mihomo-core.exe；macOS/Linux 为 mihomo-core
+#[cfg(target_os = "windows")]
+const CORE_NAME: &str = "mihomo-core.exe";
+#[cfg(not(target_os = "windows"))]
+const CORE_NAME: &str = "mihomo-core";
+
+// Windows 下隐藏子进程控制台窗口；其他平台原样返回
+#[cfg(target_os = "windows")]
+fn hide_window(cmd: &mut Command) -> &mut Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW)
+}
+#[cfg(not(target_os = "windows"))]
+fn hide_window(cmd: &mut Command) -> &mut Command {
+    cmd
+}
+
+// 强杀进程：Windows taskkill /F；macOS/Linux kill（SIGTERM，mihomo 正常处理退出）
+#[cfg(target_os = "windows")]
+fn kill_process(pid: u32) {
+    let _ = hide_window(Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+}
+#[cfg(not(target_os = "windows"))]
+fn kill_process(pid: u32) {
+    let _ = Command::new("kill")
+        .args([&pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+}
 
 #[derive(Serialize, Default, Clone)]
 pub struct CoreStatus {
@@ -36,6 +78,9 @@ struct CoreState {
     config_file: PathBuf,
     core_bin: PathBuf,
     proxy_enabled: bool, // 系统代理是否由本程序开启（断开/退出时只清理自己的）
+    sub_sources: Vec<String>, // connect 传入的订阅源列表（多 Worker 故障转移，自动刷新轮转用）
+    sub_idx: usize,           // 当前生效的订阅源索引（刷新失败时轮转下一个）
+    refresh_stop: Option<Arc<AtomicBool>>, // 自动刷新线程停止信号
 }
 
 static STATE: OnceLock<Mutex<CoreState>> = OnceLock::new();
@@ -55,29 +100,32 @@ fn state() -> &'static Mutex<CoreState> {
             config_file: PathBuf::new(),
             core_bin: PathBuf::new(),
             proxy_enabled: false,
+            sub_sources: Vec::new(),
+            sub_idx: 0,
+            refresh_stop: None,
         })
     })
 }
 
-// 查找 mihomo-core.exe：exe 同目录 → src-tauri/ → 项目根（编译期路径，开发模式稳定）
+// 查找内核：exe 同目录 → src-tauri/ → 项目根（编译期路径，开发模式稳定）
 fn find_core() -> Option<PathBuf> {
     let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let candidates = [
-        exe_dir.join("mihomo-core.exe"),
-        exe_dir.join("..").join("..").join("mihomo-core.exe"), // src-tauri/
+        exe_dir.join(CORE_NAME),
+        exe_dir.join("..").join("..").join(CORE_NAME), // src-tauri/
         exe_dir
             .join("..")
             .join("..")
             .join("..")
-            .join("mihomo-core.exe"), // 项目根（main exe）
+            .join(CORE_NAME), // 项目根（main exe）
         exe_dir
             .join("..")
             .join("..")
             .join("..")
             .join("..")
-            .join("mihomo-core.exe"), // 项目根（测试 exe）
-        manifest.join("..").join("mihomo-core.exe"),           // 编译期：src-tauri/../ = 项目根
+            .join(CORE_NAME), // 项目根（测试 exe）
+        manifest.join("..").join(CORE_NAME),           // 编译期：src-tauri/../ = 项目根
     ];
     candidates.into_iter().find(|p| p.exists())
 }
@@ -86,8 +134,8 @@ fn app_base() -> PathBuf {
     // 可写数据目录：exe 同目录（便携）；开发时放项目 config/
     if let Ok(exe) = std::env::current_exe() {
         let dir = exe.parent().unwrap_or(Path::new(".")).to_path_buf();
-        // 开发模式（target/debug/ 下无 mihomo-core）→ 用项目根
-        if !dir.join("mihomo-core.exe").exists() {
+        // 开发模式（target/debug/ 下无内核二进制）→ 用项目根
+        if !dir.join(CORE_NAME).exists() {
             if let Some(root) = dir
                 .parent()
                 .and_then(|d| d.parent())
@@ -112,17 +160,29 @@ fn pick_port(pref: u16) -> u16 {
     (20000..65535u16).find(|&p| port_free(p)).unwrap_or(pref)
 }
 
-// 检查进程是否存活（tasklist 精确匹配 PID，避免子串误判）
+// 检查进程是否存活（Windows tasklist 精确匹配 PID；Unix kill -0 探活）
 fn pid_alive(pid: u32) -> bool {
-    let out = Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {}", pid), "/NH"])
-        .creation_flags(CREATE_NO_WINDOW)
+    #[cfg(target_os = "windows")]
+    {
+        let out = hide_window(
+            Command::new("tasklist").args(["/FI", &format!("PID eq {}", pid), "/NH"]),
+        )
         .output();
-    match out {
-        Ok(o) => String::from_utf8_lossy(&o.stdout)
-            .split_whitespace()
-            .any(|tok| tok == pid.to_string()),
-        Err(_) => false,
+        match out {
+            Ok(o) => String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .any(|tok| tok == pid.to_string()),
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // 信号 0 不发送任何信号，仅探测进程是否存在（同用户权限下可用）
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 }
 
@@ -137,7 +197,7 @@ fn wait_pid_exit(pid: u32, max_wait: Duration) {
     }
 }
 
-// 停止当前内核：标记主动停止 + taskkill /F（返回被杀 PID）。
+// 停止当前内核：标记主动停止 + 强杀进程（返回被杀 PID）。
 // 监控线程 wait 返回后见 intentional_stop 即退出；generation 计数防旧线程误重启
 fn stop_kernel(st: &mut CoreState) -> Option<u32> {
     st.intentional_stop = true;
@@ -146,13 +206,7 @@ fn stop_kernel(st: &mut CoreState) -> Option<u32> {
     st.status.latency = 0;
     let pid = st.core_pid.take();
     if let Some(p) = pid {
-        let _ = Command::new("taskkill")
-            .args(["/F", "/PID", &p.to_string()])
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .output();
+        kill_process(p);
     }
     pid
 }
@@ -541,7 +595,9 @@ DOMAIN-SUFFIX,xiaomi.com,DIRECT
 DOMAIN-SUFFIX,huawei.com,DIRECT
 DOMAIN-SUFFIX,tencent.com,DIRECT
 DOMAIN-SUFFIX,aliyun.com,DIRECT
-DOMAIN-SUFFIX,aliyuncs.com,DIRECT";
+DOMAIN-SUFFIX,aliyuncs.com,DIRECT
+# 国际 CDN：国内可直连，走 gfw 代理反而 4-12s（实测），必须直连
+DOMAIN-SUFFIX,jsdelivr.net,DIRECT";
 
 // 内置 gfw 名单（被墙域名，走代理）；允许用外部 config/routes_box/gfwlist.txt 覆盖
 const BUILTIN_GFWLIST: &str = include_str!("../routes/gfwlist.txt");
@@ -551,10 +607,111 @@ fn rules_file() -> PathBuf {
     app_base().join("rules.txt")
 }
 
+// 读取 gfw 名单：优先外部 config/routes_box/gfwlist.txt；外部不存在或为空时用内置
+fn load_gfwlist() -> Vec<String> {
+    let ext = app_base().join("routes_box").join("gfwlist.txt");
+    let content = match std::fs::read_to_string(&ext) {
+        Ok(s) if !s.trim().is_empty() => s,
+        _ => BUILTIN_GFWLIST.to_string(),
+    };
+    content
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| {
+            !l.is_empty() && !l.starts_with('#') && !l.starts_with('!') && !l.starts_with('[')
+        })
+        .map(|l| l.to_string())
+        .collect()
+}
+
+// 加载用户自定义追加规则：优先读取 rules.txt；不存在则写入默认规则
+fn load_user_rules() -> String {
+    let fp = rules_file();
+    if let Ok(content) = std::fs::read_to_string(&fp) {
+        if !content.trim().is_empty() {
+            return content.trim().to_string();
+        }
+    }
+    let _ = std::fs::create_dir_all(app_base());
+    let _ = std::fs::write(&fp, DEFAULT_RULES);
+    DEFAULT_RULES.to_string()
+}
+
 // ---------- CF 优选 IP ----------
 // 优选 IP 文件路径：config/opt_ip.txt
 fn opt_ips_file() -> PathBuf {
     app_base().join("opt_ip.txt")
+}
+
+// 内置候选池：CF Anycast 常用优选 IP（首段 104.16.0.0/13 及 172.64/141.101/162.158 等）
+// 可用 config/opt_ip_pool.txt 覆盖追加（每行一个 IP 或逗号分隔）
+const BUILTIN_OPT_IP_POOL: &[&str] = &[
+    "1.1.1.1", "1.0.0.1", "104.16.0.1", "104.16.100.1", "104.16.200.1", "104.17.0.1",
+    "104.18.0.1", "104.19.0.1", "104.20.0.1", "104.21.0.1", "104.22.0.1", "104.23.0.1",
+    "104.24.0.1", "104.25.0.1", "104.26.0.1", "104.27.0.1", "104.28.0.1", "104.29.0.1",
+    "104.30.0.1", "104.31.0.1", "172.64.0.1", "172.65.0.1", "172.66.0.1", "172.67.0.1",
+    "141.101.0.1", "162.158.0.1", "190.93.0.1", "198.41.0.1",
+];
+
+fn opt_ip_pool_file() -> PathBuf {
+    app_base().join("opt_ip_pool.txt")
+}
+
+// 组装候选池：内置 + 外部覆盖（config/opt_ip_pool.txt）合并去重
+fn opt_ip_pool() -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut add = |ips: &[String]| {
+        for ip in ips {
+            if seen.insert(ip.clone()) {
+                out.push(ip.clone());
+            }
+        }
+    };
+    let external = std::fs::read_to_string(opt_ip_pool_file())
+        .map(|c| parse_opt_ips(&c))
+        .unwrap_or_default();
+    add(&external);
+    add(&BUILTIN_OPT_IP_POOL.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    out
+}
+
+// 并发 TCP 探测候选池（443 端口，1.5s 超时），返回延迟升序的前 5 个 (IP, 延迟ms)
+fn probe_opt_ips() -> Vec<(String, u128)> {
+    let pool = opt_ip_pool();
+    let (tx, rx) = std::sync::mpsc::channel::<(String, u128)>();
+    let mut handles = Vec::new();
+    for ip in pool {
+        let tx = tx.clone();
+        handles.push(std::thread::spawn(move || {
+            let Ok(addr) = format!("{}:443", ip).parse::<std::net::SocketAddr>() else {
+                return;
+            };
+            let start = std::time::Instant::now();
+            if std::net::TcpStream::connect_timeout(
+                &addr,
+                Duration::from_millis(1500),
+            )
+            .is_ok()
+            {
+                let _ = tx.send((ip, start.elapsed().as_millis()));
+            }
+        }));
+    }
+    drop(tx);
+    let mut results: Vec<(String, u128)> = rx.iter().collect();
+    for h in handles {
+        let _ = h.join();
+    }
+    results.sort_by_key(|(_, ms)| *ms);
+    results.truncate(5);
+    results
+}
+
+// 写优选 IP 列表到 opt_ip.txt（内部用）
+fn write_opt_ips(ips: &[String]) -> Result<(), String> {
+    let _ = std::fs::create_dir_all(app_base());
+    std::fs::write(opt_ips_file(), ips.join("\n")).map_err(|e| format!("写 opt_ip.txt 失败: {}", e))
 }
 
 // 纯函数：逐行 trim、跳过空行和 # 注释、支持逗号分隔多 IP、
@@ -600,6 +757,21 @@ pub fn save_opt_ips(content: String) -> Result<serde_json::Value, String> {
     Ok(json!({ "ok": true }))
 }
 
+// 一键自动测速：并发探测候选池 → 自动写入 opt_ip.txt → 返回 (IP, 延迟ms) 列表
+#[tauri::command]
+pub fn auto_probe_opt_ips() -> Result<serde_json::Value, String> {
+    let results = probe_opt_ips();
+    if results.is_empty() {
+        return Err("没有探测到可用优选 IP，请检查网络或稍后重试".into());
+    }
+    let ips: Vec<String> = results.iter().map(|(ip, _)| ip.clone()).collect();
+    write_opt_ips(&ips)?;
+    Ok(json!({
+        "ips": ips,
+        "latencies": results.iter().map(|(_, ms)| ms).collect::<Vec<_>>()
+    }))
+}
+
 // 为可优选节点（ws + tls 的 vless/vmess/trojan）按每个 IP 克隆一份变体；
 // 其余节点（ss/socks/http、非 ws、ws 无 tls）原样保留
 fn apply_opt_ips(nodes: Vec<Node>, ips: &[String]) -> Vec<Node> {
@@ -625,36 +797,6 @@ fn apply_opt_ips(nodes: Vec<Node>, ips: &[String]) -> Vec<Node> {
         }
     }
     out
-}
-
-// 读取 gfw 名单：优先外部 config/routes_box/gfwlist.txt；外部不存在或为空时用内置
-fn load_gfwlist() -> Vec<String> {
-    let ext = app_base().join("routes_box").join("gfwlist.txt");
-    let content = match std::fs::read_to_string(&ext) {
-        Ok(s) if !s.trim().is_empty() => s,
-        _ => BUILTIN_GFWLIST.to_string(),
-    };
-    content
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| {
-            !l.is_empty() && !l.starts_with('#') && !l.starts_with('!') && !l.starts_with('[')
-        })
-        .map(|l| l.to_string())
-        .collect()
-}
-
-// 加载用户自定义追加规则：优先读取 rules.txt；不存在则写入默认规则
-fn load_user_rules() -> String {
-    let fp = rules_file();
-    if let Ok(content) = std::fs::read_to_string(&fp) {
-        if !content.trim().is_empty() {
-            return content.trim().to_string();
-        }
-    }
-    let _ = std::fs::create_dir_all(app_base());
-    let _ = std::fs::write(&fp, DEFAULT_RULES);
-    DEFAULT_RULES.to_string()
 }
 
 // 生成完整路由规则（旧项目 gfw 策略）：私有/国内直连 + gfw 名单走代理 + 其余直连
@@ -701,7 +843,7 @@ fn build_config(nodes: &[Node], mixed_port: u16, ctrl_port: u16) -> Option<Strin
         .collect::<Vec<_>>()
         .join("\n");
     let cfg = format!(
-        "mixed-port: {}\nallow-lan: false\nmode: rule\nlog-level: warning\nlog-file: history.log\nexternal-controller: 127.0.0.1:{}\nproxies:\n{}\nproxy-groups:\n  - name: auto\n    type: url-test\n    url: http://www.gstatic.com/generate_204\n    interval: 180\n    tolerance: 300\n    proxies:\n{}\nrules:\n{}",
+        "mixed-port: {}\nallow-lan: false\nmode: rule\nlog-level: warning\nlog-file: history.log\nkeep-alive-interval: 15\nkeep-alive-idle: 15\nexternal-controller: 127.0.0.1:{}\ndns:\n  enable: true\n  enhanced-mode: redir-host\n  nameserver:\n    - 223.5.5.5\n    - 119.29.29.29\n  fallback:\n    - 8.8.8.8\n    - 1.1.1.1\n  fallback-filter:\n    geoip: false\nproxies:\n{}\nproxy-groups:\n  - name: auto\n    type: url-test\n    url: http://www.gstatic.com/generate_204\n    interval: 60\n    tolerance: 300\n    proxies:\n{}\nrules:\n{}",
         mixed_port, ctrl_port,
         outbounds.join("\n"),
         names.iter().map(|n| format!("      - {}", n)).collect::<Vec<_>>().join("\n"),
@@ -715,19 +857,19 @@ fn build_config(nodes: &[Node], mixed_port: u16, ctrl_port: u16) -> Option<Strin
 const VALIDATE_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn validate_config(core: &Path, temp: &Path, config: &Path) -> bool {
-    let Ok(mut child) = Command::new(core)
-        .args([
+    let Ok(mut child) = hide_window(
+        Command::new(core).args([
             "-t",
             "-d",
             temp.to_str().unwrap_or(""),
             "-f",
             config.to_str().unwrap_or(""),
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+        ]),
+    )
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
     else {
         return false;
     };
@@ -750,19 +892,19 @@ fn validate_config(core: &Path, temp: &Path, config: &Path) -> bool {
 }
 
 fn spawn_core(st: &CoreState) -> Result<Child, String> {
-    Command::new(&st.core_bin)
-        .args([
+    hide_window(
+        Command::new(&st.core_bin).args([
             "-d",
             st.temp_dir.to_str().unwrap_or(""),
             "-f",
             st.config_file.to_str().unwrap_or(""),
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("启动内核失败: {}", e))
+        ]),
+    )
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    .map_err(|e| format!("启动内核失败: {}", e))
 }
 
 fn start_core_locked(st: &mut CoreState) -> Result<(), String> {
@@ -910,33 +1052,73 @@ fn query_node_status() {
         if let Ok(text) = resp.into_string() {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
                 let mut s = state().lock().unwrap();
-                s.status.download_total = v
-                    .get("downloadTotal")
-                    .and_then(|x| x.as_u64())
-                    .unwrap_or(0);
-                s.status.upload_total = v
-                    .get("uploadTotal")
-                    .and_then(|x| x.as_u64())
-                    .unwrap_or(0);
+                s.status.download_total =
+                    v.get("downloadTotal").and_then(|x| x.as_u64()).unwrap_or(0);
+                s.status.upload_total = v.get("uploadTotal").and_then(|x| x.as_u64()).unwrap_or(0);
             }
         }
     }
 }
 
 // ---------- 命令 ----------
+// 拆分订阅源：内容含 URL 时按换行/逗号拆分为多个源（多 Worker 故障转移）；
+// 否则整体作为节点内容原样返回
+fn split_sub_sources(subscription: &str) -> Vec<String> {
+    if !subscription.contains("http://") && !subscription.contains("https://") {
+        return vec![subscription.to_string()];
+    }
+    subscription
+        .split(|c| c == '\n' || c == ',')
+        .map(|s| s.trim())
+        .filter(|s| {
+            !s.is_empty() && (s.starts_with("http://") || s.starts_with("https://"))
+        })
+        .map(|s| s.to_string())
+        .collect()
+}
+
 #[tauri::command]
 pub fn connect(subscription: String) -> Result<serde_json::Value, String> {
-    // 拉取订阅
-    let text = if subscription.starts_with("http://") || subscription.starts_with("https://") {
-        crate::subscribe::fetch_url_pub(&subscription)?
-    } else {
-        subscription
-    };
-    let nodes = apply_opt_ips(parse_subscription(&text), &load_opt_ips());
+    // 多订阅源：逐个尝试拉取，第一个成功的作为节点文本（首个失败自动切下一个 Worker）
+    let sources = split_sub_sources(&subscription);
+    let mut text = String::new();
+    let mut active_idx = 0usize;
+    for (i, src) in sources.iter().enumerate() {
+        if src.starts_with("http://") || src.starts_with("https://") {
+            match crate::subscribe::fetch_url_pub(src) {
+                Ok(t) => {
+                    text = t;
+                    active_idx = i;
+                    break;
+                }
+                Err(_) => continue,
+            }
+        } else {
+            text = src.clone();
+            active_idx = i;
+            break;
+        }
+    }
+    if text.is_empty() {
+        return Err("所有订阅源拉取失败，请检查链接".into());
+    }
+    // 自动优选 IP：opt_ip.txt 为空时自动并发探测候选池并写入，避免手动配置
+    let mut ips = load_opt_ips();
+    if ips.is_empty() {
+        let probed = probe_opt_ips();
+        if !probed.is_empty() {
+            let probed_ips: Vec<String> = probed.into_iter().map(|(ip, _)| ip).collect();
+            let _ = write_opt_ips(&probed_ips);
+            ips = probed_ips;
+        }
+    }
+    let nodes = apply_opt_ips(parse_subscription(&text), &ips);
     if nodes.is_empty() {
         return Err("解析不到任何节点，请检查订阅链接".into());
     }
     let mut st = state().lock().unwrap();
+    st.sub_sources = sources;
+    st.sub_idx = active_idx;
     // 停掉旧内核（若有），避免旧进程泄漏继续占用端口
     if let Some(pid) = stop_kernel(&mut st) {
         wait_pid_exit(pid, Duration::from_secs(3));
@@ -946,20 +1128,29 @@ pub fn connect(subscription: String) -> Result<serde_json::Value, String> {
     st.ctrl_port = pick_port(9090);
     st.temp_dir = app_base().join("temp");
     st.config_file = st.temp_dir.join("config.yaml");
-    st.core_bin = find_core().ok_or("未找到 mihomo-core.exe，请将其放在程序目录".to_string())?;
+    st.core_bin = find_core()
+        .ok_or(format!("未找到 {}，请将其放在程序目录", CORE_NAME))?;
     let count = st.nodes.len();
     let mixed = st.mixed_port;
     start_core_locked(&mut st)?;
     // 开启系统代理
     crate::proxy::set_system_proxy_inner(true, mixed);
     st.proxy_enabled = true;
+    // 启动订阅自动刷新后台线程（disconnect 时置停）
+    let stop = Arc::new(AtomicBool::new(false));
+    st.refresh_stop = Some(stop.clone());
     drop(st);
+    std::thread::spawn(move || refresh_loop(stop));
     Ok(json!({ "ok": true, "nodes": count, "mixedPort": mixed }))
 }
 
 #[tauri::command]
 pub fn disconnect() -> Result<serde_json::Value, String> {
     let mut st = state().lock().unwrap();
+    // 停止订阅自动刷新线程
+    if let Some(s) = st.refresh_stop.take() {
+        s.store(true, Ordering::Relaxed);
+    }
     // 真正杀掉内核进程（taskkill /F /PID），监控线程 wait 返回后见 intentional_stop 即退出
     stop_kernel(&mut st);
     // 只还原本程序开启的系统代理（避免误关其他代理工具的设置）
@@ -968,6 +1159,126 @@ pub fn disconnect() -> Result<serde_json::Value, String> {
         st.proxy_enabled = false;
     }
     Ok(json!({ "ok": true }))
+}
+
+// 全节点失效检测：/proxies/auto 的 all 对象非空且所有延迟均为 0（超时）才算全挂；
+// 任何请求/解析错误一律返回 false，避免瞬时故障误触发
+fn all_nodes_dead() -> bool {
+    let (running, ctrl_port) = {
+        let s = state().lock().unwrap();
+        (s.status.running, s.ctrl_port)
+    };
+    if !running {
+        return false;
+    }
+    let url = format!("http://127.0.0.1:{}/proxies/auto", ctrl_port);
+    let Ok(resp) = ureq::get(&url).timeout(Duration::from_secs(2)).call() else {
+        return false;
+    };
+    let Ok(text) = resp.into_string() else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    let all = match v.get("all").and_then(|x| x.as_object()) {
+        Some(o) if !o.is_empty() => o,
+        _ => return false,
+    };
+    all.values().all(|x| x.as_u64().unwrap_or(1) == 0)
+}
+
+// 订阅自动刷新：按轮转顺序重拉订阅（多 Worker 故障转移），成功即按当前优选 IP
+// 重建节点并重启内核（仿 save_rules 重启路径）
+fn do_refresh() {
+    // 持锁快照，避免拉取期间长期占用锁
+    let (sub_sources, sub_idx, _mixed_port, _ctrl_port, _temp_dir, _config_file, _core_bin) = {
+        let s = state().lock().unwrap();
+        (
+            s.sub_sources.clone(),
+            s.sub_idx,
+            s.mixed_port,
+            s.ctrl_port,
+            s.temp_dir.clone(),
+            s.config_file.clone(),
+            s.core_bin.clone(),
+        )
+    };
+    // 自动刷新只对 URL 订阅有意义
+    if sub_sources.is_empty() {
+        return;
+    }
+    // 从当前源开始轮转尝试；全部失败则沿用旧节点
+    let mut text = String::new();
+    let mut used_idx = sub_idx;
+    for step in 0..sub_sources.len() {
+        let i = (sub_idx + step) % sub_sources.len();
+        let src = &sub_sources[i];
+        if !(src.starts_with("http://") || src.starts_with("https://")) {
+            continue;
+        }
+        if let Ok(t) = crate::subscribe::fetch_url_pub(src) {
+            if !parse_subscription(&t).is_empty() {
+                text = t;
+                used_idx = i;
+                break;
+            }
+        }
+    }
+    if text.is_empty() {
+        state().lock().unwrap().status.last_error = "订阅自动刷新失败（全部源不可用），沿用旧节点".into();
+        return;
+    }
+    let mut nodes = parse_subscription(&text);
+    if nodes.is_empty() {
+        state().lock().unwrap().status.last_error = "订阅刷新：解析不到节点，沿用旧配置".into();
+        return;
+    }
+    nodes = apply_opt_ips(nodes, &load_opt_ips());
+    // 重新持锁：期间可能已断开，直接返回
+    let mut st = state().lock().unwrap();
+    if !st.status.running || st.intentional_stop {
+        return;
+    }
+    st.sub_idx = used_idx; // 记录当前生效源，下次从它起轮转
+    if let Some(pid) = stop_kernel(&mut st) {
+        wait_pid_exit(pid, Duration::from_secs(3));
+    }
+    st.nodes = nodes;
+    if let Err(e) = start_core_locked(&mut st) {
+        st.status.last_error = e;
+        return;
+    }
+    crate::proxy::set_system_proxy_inner(true, st.mixed_port);
+    st.proxy_enabled = true;
+}
+
+// 后台线程：周期检查全挂与定时刷新；disconnect 置 stop 后退出
+fn refresh_loop(stop: Arc<AtomicBool>) {
+    let mut last_refresh = std::time::Instant::now();
+    let mut all_dead_count: u32 = 0;
+    loop {
+        std::thread::sleep(ALL_DEAD_INTERVAL);
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        if all_nodes_dead() {
+            all_dead_count += 1;
+            if all_dead_count >= ALL_DEAD_THRESHOLD {
+                all_dead_count = 0;
+                if last_refresh.elapsed() >= REFRESH_COOLDOWN {
+                    last_refresh = std::time::Instant::now();
+                    do_refresh();
+                }
+            }
+        } else {
+            all_dead_count = 0;
+        }
+        if last_refresh.elapsed() >= REFRESH_INTERVAL {
+            last_refresh = std::time::Instant::now();
+            do_refresh();
+        }
+    }
 }
 
 // 当前运行中内核的 mixed 端口（供订阅拉取经本地代理重试）
@@ -1200,5 +1511,129 @@ mod tests {
         let g = load_gfwlist();
         assert!(g.len() >= 4000, "内置 gfw 名单应完整，实际 {}", g.len());
         assert!(g.iter().all(|d| !d.starts_with("DOMAIN")), "名单应为裸域名");
+    }
+
+    #[test]
+    fn apply_opt_ips_expands_ws_tls_only() {
+        // ws+tls 的 vless 节点配 2 个 IP 应生成 2 个 @ip 后缀变体；ss 节点保持不变
+        let ips = vec!["1.1.1.1".to_string(), "2.2.2.2".to_string()];
+        let vless = Node {
+            r#type: "vless".into(),
+            name: "v1".into(),
+            server: "orig.example.com".into(),
+            port: 443,
+            uuid: Some("u1".into()),
+            security: Some("tls".into()),
+            network: Some("ws".into()),
+            ..Default::default()
+        };
+        let out = apply_opt_ips(vec![vless.clone(), ss_node()], &ips);
+        // vless 展开为 2 个 + ss 原样 1 个
+        assert_eq!(out.len(), 3);
+        let names: Vec<&str> = out.iter().map(|n| n.name.as_str()).collect();
+        assert!(names.contains(&"v1@1.1.1.1"));
+        assert!(names.contains(&"v1@2.2.2.2"));
+        assert!(names.contains(&"s1"));
+        // server 被替换为优选 IP；ss 节点保持原样
+        let v_ip: Vec<&str> = out
+            .iter()
+            .filter(|n| n.name.starts_with("v1@"))
+            .map(|n| n.server.as_str())
+            .collect();
+        assert!(v_ip.contains(&"1.1.1.1"));
+        assert!(v_ip.contains(&"2.2.2.2"));
+        let ss = out.iter().find(|n| n.name == "s1").unwrap();
+        assert_eq!(ss.server, "1.2.3.4");
+        // ws 无 tls / 非 ws 不展开
+        let ws_no_tls = Node {
+            r#type: "vmess".into(),
+            name: "nt".into(),
+            server: "x.com".into(),
+            port: 443,
+            uuid: Some("u2".into()),
+            network: Some("ws".into()),
+            security: Some("auto".into()),
+            ..Default::default()
+        };
+        let no_ws = Node {
+            r#type: "trojan".into(),
+            name: "nw".into(),
+            server: "y.com".into(),
+            port: 443,
+            password: Some("pw".into()),
+            security: Some("tls".into()),
+            ..Default::default()
+        };
+        let out2 = apply_opt_ips(vec![ws_no_tls, no_ws], &ips);
+        assert_eq!(out2.len(), 2);
+        assert!(out2.iter().all(|n| !n.name.contains('@')));
+        // ips 为空 → 原样返回
+        let out3 = apply_opt_ips(vec![vless], &[]);
+        assert_eq!(out3.len(), 1);
+        assert_eq!(out3[0].name, "v1");
+        assert_eq!(out3[0].server, "orig.example.com");
+    }
+
+    #[test]
+    fn parse_opt_ips_filters_invalid() {
+        // 合法 IP 保留、非法/注释/空行剔除、去重、超 5 个截断、逗号分隔解析
+        let content = "# 注释\n8.8.8.8\n\n999.1.1.1\n\n1.1.1.1\n\n3.3.3.3, 4.4.4.4\n\nnot-an-ip\n\n5.5.5.5\n\n6.6.6.6\n";
+        let ips = parse_opt_ips(content);
+        assert_eq!(
+            ips,
+            vec!["8.8.8.8", "1.1.1.1", "3.3.3.3", "4.4.4.4", "5.5.5.5"]
+        );
+        assert_eq!(ips.len(), 5);
+        // 空内容 / 纯注释
+        assert!(parse_opt_ips("").is_empty());
+        assert!(parse_opt_ips("# 只有注释\n\n").is_empty());
+    }
+
+    #[test]
+    fn opt_ip_pool_includes_builtin_and_dedup() {
+        // 内置池非空、去重无重复
+        let pool = opt_ip_pool();
+        assert!(!pool.is_empty(), "内置候选池不应为空");
+        assert!(pool.iter().all(|ip| ip.parse::<std::net::IpAddr>().is_ok()));
+        let unique: std::collections::HashSet<&String> = pool.iter().collect();
+        assert_eq!(unique.len(), pool.len(), "候选池不应有重复 IP");
+    }
+
+    #[test]
+    fn split_sub_sources_multi_url_vs_plain() {
+        // 多 URL(换行/逗号分隔)拆分;纯节点内容原样返回
+        let multi = "https://a.example.com/sub1\nhttps://b.example.com/sub2";
+        let s = split_sub_sources(multi);
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0], "https://a.example.com/sub1");
+        assert_eq!(s[1], "https://b.example.com/sub2");
+        let comma = "https://a.example.com/sub1,https://b.example.com/sub2";
+        assert_eq!(split_sub_sources(comma).len(), 2);
+        let plain = "vmess://abc\nvmess://def"; // 非 URL 内容 → 原样
+        let p = split_sub_sources(plain);
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0], plain);
+        // 空输入 → 空串元素(connect 会报"所有订阅源拉取失败")
+        assert_eq!(split_sub_sources(""), vec!["".to_string()]);
+    }
+
+    #[test]
+    fn build_config_has_keepalive_and_dns() {
+        // 生成配置应含 WS 保活(keep-alive)与 DNS 防污染段
+        let cfg = build_config(&[ss_node()], 7890, 9090).expect("应生成配置");
+        assert!(cfg.contains("keep-alive-interval: 15"));
+        assert!(cfg.contains("keep-alive-idle: 15"));
+        assert!(cfg.contains("dns:"));
+        assert!(cfg.contains("enhanced-mode: redir-host"));
+        assert!(cfg.contains("interval: 60"));
+    }
+
+    #[test]
+    fn connect_all_sources_fail_returns_err() {
+        // 无 URL 且为空串 → 所有源拉取失败报错(不 panic)
+        let err = connect(String::new());
+        assert!(err.is_err());
+        let msg = err.unwrap_err();
+        assert!(msg.contains("所有订阅源拉取失败") || msg.contains("解析不到任何节点"));
     }
 }

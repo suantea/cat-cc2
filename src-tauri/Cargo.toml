@@ -1,6 +1,6 @@
 [package]
 name = "cat-cc2"
-version = "2.0.0"
+version = "2.1.0"
 description = "极简 Windows 代理：订阅一键连接（mihomo 内核）"
 authors = ["suantea"]
 edition = "2021"
