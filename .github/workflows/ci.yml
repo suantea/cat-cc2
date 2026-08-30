@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: cargo check & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      # Linux 上编译 Tauri 需要 webkit2gtk 等 GTK 头文件
+      - name: Install Tauri deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Check
+        working-directory: src-tauri
+        run: cargo check -j 2
+      # 单元测试：订阅解析（防崩溃弹药库在内）+ 配置生成 + 系统代理解析。
+      # full_flow 集成测试需要 mihomo 内核二进制，不在 CI 跑。
+      - name: Test
+        working-directory: src-tauri
+        run: cargo test --lib -j 2

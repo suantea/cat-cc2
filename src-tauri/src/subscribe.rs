@@ -91,10 +91,14 @@ fn decode_b64(s: &str) -> Option<String> {
 
 fn try_b64_decode(text: &str) -> Option<String> {
     let t = text.trim();
-    if t.len() < 10
-        || !t
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "+/=-_".contains(c) || c.is_whitespace())
+    // 订阅内容合法上限远低于此；超长输入直接放弃 base64 尝试（防崩溃第一：
+    // 不给畸形/超长粘贴内容做无谓的多轮解码）。
+    if t.len() < 10 || t.len() > 20 * 1024 * 1024 {
+        return None;
+    }
+    if !t
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "+/=-_".contains(c) || c.is_whitespace())
     {
         return None;
     }
@@ -111,14 +115,19 @@ fn name_from_hash(u: &Url) -> String {
 }
 
 fn percent_decode_str(s: &str) -> String {
-    // 简单的 percent-decode（处理 %XX 和 +）
+    // 简单的 percent-decode（处理 %XX 和 +）。
+    // 只在字节上操作：此前 `&s[i+1..i+3]` 直接切 &str，若 % 后跟多字节
+    // 字符（如 "%€"，€ = E2 82 AC），i+3 会落进字符中间 panic——而 #
+    // 后的原始文本来自用户粘贴的订阅内容，完全不可信（防崩溃第一）。
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push((hi * 16 + lo) as u8);
                 i += 3;
                 continue;
             }
@@ -1007,5 +1016,53 @@ mod tests {
         assert_eq!(s.r#type, "socks");
         assert_eq!(s.server, "1.2.3.4");
         assert_eq!(s.port, 1080);
+    }
+
+    // 防崩溃第一：任何畸形输入都不能 panic，只能返回空/None。
+    // 覆盖历史真实缺陷——"#%€" 曾让 percent_decode_str 切进 UTF-8 字符
+    // 中间 panic（&s[i+1..i+3] 非字符边界）。
+    #[test]
+    fn malformed_input_never_panics() {
+        // percent-decode 边界：% 后跟多字节 UTF-8 字符（panic 复现用例）
+        assert_eq!(percent_decode_str("%€"), "%€");
+        assert_eq!(percent_decode_str("a%🔥b"), "a%🔥b");
+        assert_eq!(percent_decode_str("%41%42"), "AB"); // 正常解码不受影响
+        assert_eq!(percent_decode_str("%4"), "%4"); // 截断的转义
+        assert_eq!(percent_decode_str("100%"), "100%");
+
+        // 分享链接层的恶意/畸形输入弹药库
+        let garbage = [
+            "",
+            " ",
+            "ss://",
+            "ss://####",
+            "ss://@@@@:****#%€🔥%80",
+            "ss://%%%%%",
+            "vmess://!!!not-base64!!!",
+            "vmess://eyJhZGQiOiJ1LTR1bmljb2RlLcOlIn0=", // base64 含非法 JSON
+            "vmess://eyJwb3J0Ijo3MDAwMH0=", // port 70000 越界
+            "trojan://:@:0#",
+            "vless://@@?&&=&&#",
+            "hy2://",
+            "hysteria2://x",
+            "hysteria://a@b:notaport",
+            "tuic://x@y",
+            "socks5://",
+            "http://",
+            "https://[::1",
+            "ss://\u{0}\u{1}\u{2}",
+            "vmess://eyJhZGQ",
+        ];
+        for g in garbage {
+            let _ = parse_share_link(g); // 只要不 panic 即通过
+        }
+
+        // 订阅入口：整段垃圾 / 二进制噪声 / 混入多字节
+        let _ = parse_subscription("proxies:\n  - {name: \"a\""); // 截断的 YAML
+        let _ = parse_subscription("\u{0}\u{1}\u{2}\u{3}");
+        let _ = parse_subscription("vmess://eyJhZGQ\nss://#%€\ntrojan://");
+        let _ = parse_subscription(&"A".repeat(100_000)); // 超长垃圾
+        // 合法输入不被误伤
+        assert_eq!(parse_subscription("ss://YWVzLTI1Ni1nY206cGFzc3dvcmQxMjM@1.2.3.4:8388#节点").len(), 1);
     }
 }

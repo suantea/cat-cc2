@@ -59,7 +59,7 @@
 
 ```bash
 cargo check                                # 语法检查
-cargo test --lib -j 2                       # 单元测试（订阅解析各协议 + 系统代理解析 + 自愈纯函数，29 个）
+cargo test --lib -j 2                       # 单元测试（订阅解析各协议 + 畸形输入弹药库 + 系统代理解析，30 个）
 CARGO_BUILD_JOBS=2 cargo test --test full_flow -j 2   # 全流程集成测试
 CARGO_BUILD_JOBS=2 cargo build --release -j 2          # release 构建（低并行防线程耗尽）
 ```
