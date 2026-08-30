@@ -140,14 +140,7 @@ fn parse_share_link(link: &str) -> Option<Node> {
             .to_string();
         let port = o
             .get("port")
-            .and_then(|v| {
-                v.as_str()
-                    .or_else(|| {
-                        v.as_u64()
-                            .map(|n| Box::leak(n.to_string().into_boxed_str()) as &str)
-                    })
-                    .and_then(|s| s.parse().ok())
-            })
+            .and_then(parse_port_value)
             .unwrap_or(0);
         return Some(Node {
             r#type: "vmess".into(),
@@ -159,14 +152,7 @@ fn parse_share_link(link: &str) -> Option<Node> {
             server: add.clone(),
             port,
             uuid: o.get("id").and_then(|v| v.as_str()).map(String::from),
-            aid: o.get("aid").and_then(|v| {
-                v.as_str()
-                    .or_else(|| {
-                        v.as_u64()
-                            .map(|n| Box::leak(n.to_string().into_boxed_str()) as &str)
-                    })
-                    .and_then(|s| s.parse().ok())
-            }),
+            aid: o.get("aid").and_then(parse_aid_value),
             security: Some(
                 o.get("scy")
                     .and_then(|v| v.as_str())
@@ -429,6 +415,25 @@ fn yaml_safe(s: &str) -> String {
 
 // ss:// SIP002 plugin 参数解析：plugin=obfs-local;obfs=http;obfs-host=x 或 v2ray-plugin;mode=websocket;...
 // 返回 (mihomo plugin 名, plugin-opts 的 YAML 子行，已按 6 空格缩进供 plugin-opts: 下使用)
+// vmess 分享链接的 JSON 里 port/aid 既可能是字符串也可能是数字。
+// 之前用 Box::leak 把数字转成字符串再 parse——每次解析都永久泄漏一小块内存
+// （订阅每 6 小时自动重拉，泄漏持续累积），改为直接按数值类型取值。
+fn parse_port_value(v: &serde_json::Value) -> Option<u16> {
+    match v {
+        serde_json::Value::String(s) => s.parse().ok(),
+        serde_json::Value::Number(n) => n.as_u64().and_then(|x| u16::try_from(x).ok()),
+        _ => None,
+    }
+}
+
+fn parse_aid_value(v: &serde_json::Value) -> Option<u32> {
+    match v {
+        serde_json::Value::String(s) => s.parse().ok(),
+        serde_json::Value::Number(n) => n.as_u64().and_then(|x| u32::try_from(x).ok()),
+        _ => None,
+    }
+}
+
 fn parse_ss_plugin(query: &str) -> Option<(String, String)> {
     let plugin_val = query.split('&').find_map(|kv| {
         let (k, v) = kv.split_once('=')?;
@@ -840,6 +845,30 @@ mod tests {
         assert_eq!(nodes[0].r#type, "vmess");
         assert_eq!(nodes[1].r#type, "vless");
         assert_eq!(nodes[1].reality_pbk.as_deref(), Some("pubkey"));
+    }
+
+    // vmess JSON 的 port/aid 既可能是字符串也可能是数字（不同机场导出不一）。
+    // 回归：数字形态此前经 Box::leak 转字符串再 parse——功能对但每次解析
+    // 永久泄漏内存；此测试锁定两种形态都正确解析（含 u16 边界值 65535）。
+    #[test]
+    fn parse_vmess_numeric_and_string_port_aid() {
+        let numeric = serde_json::json!({"ps":"num","add":"1.1.1.1","port":65535,"id":"u1","aid":64,"net":"tcp"});
+        let n = parse_share_link(&format!("vmess://{}", B64.encode(numeric.to_string().as_bytes())))
+            .expect("数值 port/aid 应解析成功");
+        assert_eq!(n.port, 65535);
+        assert_eq!(n.aid, Some(64));
+
+        let stringy = serde_json::json!({"ps":"str","add":"2.2.2.2","port":"8443","id":"u2","aid":"0","net":"tcp"});
+        let s = parse_share_link(&format!("vmess://{}", B64.encode(stringy.to_string().as_bytes())))
+            .expect("字符串 port/aid 应解析成功");
+        assert_eq!(s.port, 8443);
+        assert_eq!(s.aid, Some(0));
+
+        // 越界端口应安全失败为 0，而不是 panic 或错误值
+        let overflow = serde_json::json!({"ps":"ovf","add":"3.3.3.3","port":70000,"id":"u3"});
+        let o = parse_share_link(&format!("vmess://{}", B64.encode(overflow.to_string().as_bytes())))
+            .expect("越界端口仍应返回节点");
+        assert_eq!(o.port, 0);
     }
 
     #[test]

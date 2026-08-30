@@ -10,7 +10,7 @@
 - **自动选优与故障切换**：连接后对所有节点测速，自动选用延迟最低节点；节点故障自动切换
 - **轻量**：Tauri 2 + 系统 WebView2 / WKWebView，无自带 Chromium、无终端窗口，占用低、启动快
 - **内核健壮**：mihomo 内核意外退出自动重启（最多 3 次，指数退避 1s/2s/4s）；配置启动前校验，非法配置拒绝启动
-- **异常自愈**：异常退出/强杀后，下次启动自动还原残留的死系统代理，网页不会异常
+- **异常自愈**：异常退出/强杀后，下次启动自动还原残留的死系统代理，网页不会异常（macOS 扫描全部网络服务，切网残留也能清理）
 - **规则可定制**：自定义直连/代理规则，保存后自动重启内核立即生效
 - **托盘常驻**：关窗最小化到托盘，托盘退出 = 停内核 + 还原系统代理
 - **订阅自动刷新**：连接期间每 6 小时自动重拉订阅，失败沿用旧节点；全节点失效自动重新拉取
@@ -59,10 +59,12 @@
 
 ```bash
 cargo check                                # 语法检查
-cargo test --lib -j 2                       # 单元测试
+cargo test --lib -j 2                       # 单元测试（订阅解析各协议 + 系统代理解析 + 自愈纯函数，29 个）
 CARGO_BUILD_JOBS=2 cargo test --test full_flow -j 2   # 全流程集成测试
 CARGO_BUILD_JOBS=2 cargo build --release -j 2          # release 构建（低并行防线程耗尽）
 ```
+
+> 本机没有把 `~/.cargo/bin` 加进 PATH 时，直接用 `~/.cargo/bin/cargo` 调用。
 
 产物：Windows `src-tauri/target/release/cat-cc2.exe`；macOS `cargo tauri build` 产出 `.app` / `.dmg`（需安装 tauri-cli）。
 

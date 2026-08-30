@@ -206,14 +206,9 @@ mod mac {
         }
     }
 
-    // 读取活动服务的 web 代理现状：(enabled, server, port)
-    fn current_proxy() -> Option<(bool, String, u16)> {
-        let svc = active_service()?;
-        let out = Command::new(NETWORKSETUP)
-            .args(["-getwebproxy", &svc])
-            .output()
-            .ok()?;
-        let text = String::from_utf8_lossy(&out.stdout);
+    // 读取单个服务的 `-getwebproxy` 输出：(enabled, server, port)。
+    // 独立成纯函数以便单测（输出格式本地化无关：键为英文）。
+    pub(crate) fn parse_getwebproxy(text: &str) -> (bool, String, u16) {
         let mut enabled = false;
         let mut server = String::new();
         let mut port = 0u16;
@@ -226,34 +221,113 @@ mod mac {
                 port = v.trim().parse().unwrap_or(0);
             }
         }
-        Some((enabled, server, port))
+        (enabled, server, port)
     }
 
-    // 启动自愈：系统代理指向本地端口但该端口无进程监听（上次异常退出/崩溃的残留）→ 还原代理
-    pub fn restore() -> bool {
-        let Some((enabled, server, port)) = current_proxy() else {
-            return false;
+    // 该 server 是否指向本机（只有本机代理才允许自动还原，绝不碰用户手动代理）
+    pub(crate) fn is_local_proxy(server: &str) -> bool {
+        server == "127.0.0.1" || server == "localhost"
+    }
+
+    // 探测全部（未禁用的）网络服务。
+    fn all_services() -> Vec<String> {
+        let Some(out) = Command::new(NETWORKSETUP)
+            .arg("-listallnetworkservices")
+            .output()
+            .ok()
+        else {
+            return Vec::new();
         };
-        if !enabled {
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut svcs = Vec::new();
+        for line in text.lines() {
+            let svc = line.trim();
+            if svc.is_empty() || svc.starts_with('*') || svc.starts_with("An asterisk") {
+                continue;
+            }
+            svcs.push(svc.to_string());
+        }
+        svcs
+    }
+
+    // 找出 web 代理指向本地端口、且该端口已无监听的（死亡代理）服务列表。
+    fn services_with_dead_local_proxy() -> Vec<(String, u16)> {
+        let mut dirty = Vec::new();
+        for svc in all_services() {
+            let Some(info) = Command::new(NETWORKSETUP)
+                .args(["-getwebproxy", &svc])
+                .output()
+                .ok()
+            else {
+                continue;
+            };
+            let (enabled, server, port) = parse_getwebproxy(&String::from_utf8_lossy(&info.stdout));
+            if !enabled || !is_local_proxy(&server) || port == 0 {
+                continue;
+            }
+            // 端口可绑定 = 无监听 = 代理已死
+            if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+                continue; // 有监听则代理仍可用 → 不动
+            }
+            dirty.push((svc, port));
+        }
+        dirty
+    }
+
+    // 启动自愈：任意网络服务的系统代理指向本地端口但该端口无进程监听
+    //（上次异常退出/崩溃的残留）→ 还原。
+    // 逐服务扫描而非只看当前活动服务：若连接时走 Wi-Fi、退出前切到有线，
+    // 旧服务上残留的死代理用活动服务检测永远发现不了，切换网络后网页全断。
+    // 多个脏服务合并为一次提权脚本，避免反复弹授权框。
+    pub fn restore() -> bool {
+        let dirty = services_with_dead_local_proxy();
+        if dirty.is_empty() {
             return false;
         }
-        if server != "127.0.0.1" && server != "localhost" {
-            return false; // 远程代理 → 不动
+        let mut script = String::new();
+        for (i, (svc, _)) in dirty.iter().enumerate() {
+            let q = sq(svc);
+            if i > 0 {
+                script.push_str(" && ");
+            }
+            script.push_str(&format!(
+                "networksetup -setwebproxystate {q} off && networksetup -setsecurewebproxystate {q} off && networksetup -setsocksfirewallproxystate {q} off",
+                q = q
+            ));
         }
-        if port == 0 {
-            return false;
-        }
-        // 端口可绑定 = 无监听 = 代理已死 → 还原；有监听则代理仍可用 → 不动
-        if std::net::TcpListener::bind(("127.0.0.1", port)).is_err() {
-            return false;
-        }
-        proxy_off();
-        true
+        run_admin(&script)
     }
 
     // macOS 侧无需对外导出（Linux 构建时此模块不存在，避免死代码警告在部分工具链出现）
     #[allow(dead_code)]
     pub fn _unused_guard() {}
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod mac_tests {
+    use super::mac::{is_local_proxy, parse_getwebproxy};
+
+    #[test]
+    fn parse_getwebproxy_expects_fields() {
+        let out = "Enabled: Yes\nServer: 127.0.0.1\nPort: 7897\nAuthenticated Proxy Enabled: 0";
+        assert_eq!(parse_getwebproxy(out), (true, "127.0.0.1".into(), 7897));
+
+        let off = "Enabled: No\nServer: 0.0.0.0\nPort: 0";
+        assert_eq!(parse_getwebproxy(off), (false, "0.0.0.0".into(), 0));
+
+        // 空输出（服务异常）不应 panic
+        assert_eq!(parse_getwebproxy(""), (false, String::new(), 0));
+    }
+
+    #[test]
+    fn is_local_proxy_matches_localhost_forms_only() {
+        assert!(is_local_proxy("127.0.0.1"));
+        assert!(is_local_proxy("localhost"));
+        // 远程代理绝不能被自动还原逻辑碰掉
+        assert!(!is_local_proxy("192.168.1.10"));
+        assert!(!is_local_proxy("proxy.corp.com"));
+        assert!(!is_local_proxy("::1"));
+    }
 }
 
 // ---------- 平台无关入口 ----------
