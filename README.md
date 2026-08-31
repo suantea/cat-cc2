@@ -2,7 +2,7 @@
 
 > 极简代理工具：**订阅一键连接**(Windows / macOS) —— Rust + Tauri 2 外壳 + mihomo 内核。
 
-[Apache-2.0](#版权与许可) · Windows / macOS · [AtomGit](https://atomgit.com/asuan_suan/cat-cc2)
+[Apache-2.0](#版权与许可) · Windows / macOS · [GitHub](https://github.com/suantea/cat-cc2)
 
 ## ✨ 功能特性
 
@@ -81,7 +81,7 @@ config/           运行时配置（rules.txt 用户规则、routes_box 覆盖�
 
 **© 2026 suantea**，本仓库代码基于 **Apache License 2.0** 发布（见 [LICENSE](LICENSE)）。
 
-> GitHub 镜像：github.com/suantea/cat-cc2（AtomGit 为主仓库，两边同步）
+> 主仓库：github.com/suantea/cat-cc2 · AtomGit 镜像：atomgit.com/asuan_suan/cat-cc2
 
 第三方组件说明：
 
